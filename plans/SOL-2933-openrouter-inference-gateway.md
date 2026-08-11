@@ -24,15 +24,16 @@ Agents call Anthropic directly with no standard way to configure per-step model 
 
 ## 2. What exists today
 
-- `html-edit-agent/agent-pi/src/session.ts` — pi-ai's `getModel("anthropic", MODEL)`, where `MODEL = STUDIO_MODEL || "claude-opus-4-8"` (`session.ts:33`). One model, no fallback. Key comes from a hardcoded `/solstice/shared/ANTHROPIC_API_KEY` SSM path, fetched lazily on first connect (`ensureAnthropicKey`, `session.ts:50-69`) to keep a slow SSM call off the MicroVM run-hook.
-- `html-edit-agent/agent/session.py` — legacy, undeployed. Uses the Claude Agent SDK (spawns the `claude` CLI) directly against Anthropic. Not migrated by this plan; left as-is until retired.
-- No fallback logic, no per-agent model config file, no guardrails on prompt injection or PII in the request path.
+- `agent-pi`, the deployed agent, calls Anthropic directly through pi-ai: one model per process, set by `STUDIO_MODEL`, no fallback. Its Anthropic key is fetched lazily from a hardcoded SSM path on first connect, to keep the SSM call off the MicroVM run-hook.
+- A legacy, undeployed agent also calls Anthropic directly, via the Claude Agent SDK. Not migrated by this plan; left as-is until retired.
+- No fallback logic, no per-agent model config, no guardrails on prompt injection or PII in the request path.
+- Beyond `agent-pi`: several AI workflows and agents today live in the BE codebase, each with its own direct provider integration. These are expected to migrate onto Solstice-AI's unified infrastructure over the coming months, this gateway included — out of scope for this plan, but a reason to keep the config convention agent-agnostic rather than `agent-pi`-specific.
 
 ## 3. Approach
 
 Adopt OpenRouter as the single inference gateway, with BYOK (our Anthropic key, registered in OpenRouter's account settings, not in code or Terraform) and a thin per-agent model-config convention — not a wrapper SDK, since pi-ai already ships a native OpenRouter provider.
 
-- `agent-pi`: swap pi-ai's provider from `"anthropic"` to `"openrouter"`. Same session/tool-calling code above it; a provider-ID swap plus a `baseUrl` override, pending the pass-through spike below.
+- `agent-pi`: swap pi-ai's provider from `"anthropic"` to `"openrouter"`. Same session/tool-calling code above it; a provider-ID swap plus a `baseUrl` override pointed at OpenRouter.
 - Fallback chains are OpenRouter's server-side `models` array — no client-side retry logic.
 - `resolveModelConfig(agentName)` replaces `STUDIO_MODEL`: model + fallbacks live in a checked-in, reviewable `AgentLLMConfig`, merged with org defaults (provider pinning, data collection).
 - New env vars: `OPENROUTER_BASE_URL` (non-secret), `OPENROUTER_API_KEY` (secret, if already in env) falling back to `OPENROUTER_API_KEY_SSM_PATH` (non-secret, points at the secret). No environment name is ever passed to code — each environment's Terraform supplies its own SSM path.
@@ -90,7 +91,7 @@ stateDiagram-v2
 
 ## 5. Trade-offs accepted
 
-- We accept a new single point of failure — an OpenRouter platform outage blocks all inference even with Anthropic up — to get per-request fallback and BYOK without building or operating retry machinery ourselves. Revisit if OpenRouter has a sustained platform-level outage; there's no direct-Anthropic escape hatch today (decision #7).
+- We accept a new single point of failure — an OpenRouter platform outage blocks all inference even with Anthropic up — to get per-request fallback and BYOK without building or operating retry machinery ourselves. Revisit if OpenRouter has a sustained platform-level outage; there's no direct-Anthropic escape hatch today.
 - We accept dashboard-managed OpenRouter account config, not Terraform, to avoid depending on the `OpenRouterTeam/openrouter` provider at its current v0.2.x maturity. Revisit when the provider matures or this config starts changing often enough that drift becomes a real problem.
 - We accept OpenRouter's default BYOK behavior — our key first, shared-credit fallback on rate limit/failure — to keep the routing simple. Revisit if shared-credit billing becomes a real cost line; until then it just needs a funded credit balance so fallback requests don't fail for an unrelated reason.
 
@@ -104,21 +105,20 @@ stateDiagram-v2
 
 - **New single point of failure** (accepted above): OpenRouter down means all agent inference is down.
 - **Prompt caching through the proxy is an acceptance criterion, not a nice-to-have.** Agent loops resend growing context every turn; without cache-read parity, cost and latency regress. Cutover doesn't happen until a representative operation's cache-read rate on OpenRouter matches the direct-Anthropic baseline.
-- **Shared-credit fallback billing** (decision #6, accepted above): needs a funded credit balance, or fallback requests fail for an unrelated reason.
+- **Shared-credit fallback billing** (accepted above): needs a funded credit balance, or fallback requests fail for an unrelated reason.
 - **Feature translation lag.** New Anthropic features land on OpenRouter's translation layer after they land on the Anthropic SDK. Low risk today (plain tool-calling loop, thinking off); worth checking before adopting anything bleeding-edge.
 - **Rollback**: revert pi-ai's provider from `"openrouter"` back to `"anthropic"`, restore `STUDIO_MODEL` and the hardcoded `/solstice/shared/ANTHROPIC_API_KEY` path. Since it's a provider-ID swap plus a config revert, this is fast — no data migration to undo.
 
 ## 8. Verification
 
-- **pi-ai pass-through spike** (only remaining pre-implementation task, decision #3): confirm pi-ai's OpenRouter provider forwards the `models` fallback array and `provider` object, and accepts a `baseUrl` override. Determines server-side vs. wrapper-side fallback.
-- **Prompt-cache parity** (decision #4): cache-read rate on a representative agent-pi operation through OpenRouter must match the direct-Anthropic baseline before cutover.
+- **Prompt-cache parity**: cache-read rate on a representative agent-pi operation through OpenRouter must match the direct-Anthropic baseline before cutover.
 - **Guardrail flag-mode logs**: run prompt-injection detection in `flag` mode and review logs for false positives (agent loop file-read results are in scope) before escalating to `block`.
-- **Fallback firing**: confirm the response's `model` field reports the fallback model when the primary is forced to error, in a dev test.
+- **Fallback firing**: confirm the response's `model` field reports the fallback model when the primary is forced to error, in a manual test.
 - **Post-ship signal**: OpenRouter per-key analytics (spend, error rate, which model served) as the ongoing signal to watch.
 
 ## 9. Open questions
 
-- pi-ai pass-through spike (decision #3) gates implementation start. This plan assumes it resolves in favor of the built-in OpenRouter provider; if not, fallback moves into the helper module or a pi-ai fork patch.
+None.
 
 ---
 
@@ -128,21 +128,22 @@ stateDiagram-v2
 - Goal: per-agent (not yet per-step — see non-goal) model + fallback config, reviewable and versioned in the repo.
 - Goal: BYOK, so our Anthropic org agreement, spend, and rate limits stay ours.
 - Goal: compliance-aligned request routing (`provider.only: [anthropic]`, `data_collection: deny`).
-- Non-goal: structured outputs, tracing/observability, or prompt versioning via OpenRouter (decision #1) — solved elsewhere if/when needed.
-- Non-goal: per-step model config (decision #2) — no agent has distinct sub-calls today; extend `resolveModelConfig` with a step argument when one appears.
+- Non-goal: structured outputs, tracing/observability, or prompt versioning via OpenRouter — solved elsewhere if/when needed.
+- Non-goal: per-step model config — no agent has distinct sub-calls today; extend `resolveModelConfig` with a step argument when one appears.
 - Non-goal: cost-based routing — we never set `sort: "price"`; nothing here depends on OpenRouter's price optimization.
 
 ## Migration and rollout
 
-1. Register our Anthropic key as BYOK in OpenRouter's account settings (dashboard). Provision one OpenRouter API key per environment.
-2. Configure account-level guardrails per environment key: model/provider allowlist (`anthropic/*`, Anthropic provider only), a generous budget cap, prompt-injection detection in `flag` mode, PII guardrail per the category table below.
+`agent-pi` has no separate dev deployment today, just prod — this is a single cutover, staged by caution rather than by environment.
+
+1. Register our Anthropic key as BYOK in OpenRouter's account settings (dashboard). Provision the OpenRouter API key.
+2. Configure account-level guardrails on that key: model/provider allowlist (`anthropic/*`, Anthropic provider only), a generous budget cap, prompt-injection detection in `flag` mode, PII guardrail per the category table below.
 3. Land the `resolveModelConfig` helper and `agent-pi`'s `AgentLLMConfig`.
-4. Complete the pi-ai pass-through spike (open question above); adjust fallback implementation if it fails.
-5. Verify prompt-cache parity on a representative operation in dev, pointed at OpenRouter.
-6. Cut `agent-pi` over in dev: swap provider, retire `STUDIO_MODEL`.
-7. Watch prompt-injection logs in `flag` mode; escalate to `block` once clean.
-8. Cut over in prod. Retire the hardcoded `/solstice/shared/ANTHROPIC_API_KEY` constant.
-9. Backout at any stage: revert the provider swap (see § Risks and rollback) — no data to unwind.
+4. Verify prompt-cache parity on a representative operation against OpenRouter before flipping traffic.
+5. Cut `agent-pi` over: swap provider, retire `STUDIO_MODEL`.
+6. Watch prompt-injection logs in `flag` mode; escalate to `block` once clean.
+7. Retire the hardcoded `/solstice/shared/ANTHROPIC_API_KEY` constant.
+8. Backout at any stage: revert the provider swap (see § Risks and rollback) — no data to unwind.
 
 ## Security and compliance
 
@@ -162,12 +163,12 @@ stateDiagram-v2
   | IP addresses | off | No harm case for our content |
 
   Prefer Block over Redact wherever enabled — a 403 is visible and debuggable; redaction fails silently.
-- Compliance signed off on this routing posture (decision #5).
+- Compliance signed off on this routing posture.
 
 ## Phasing and estimates
 
-- **Phase 1** (demoable): pi-ai pass-through spike, `resolveModelConfig` + `AgentLLMConfig` for `agent-pi`, dev cutover for one operation, cache-parity check.
-- **Phase 2**: guardrail rollout (flag → block), prod cutover, retire `STUDIO_MODEL` and the hardcoded key constant, account config finalized per environment.
+- **Phase 1** (demoable): `resolveModelConfig` + `AgentLLMConfig` for `agent-pi`, cache-parity check, cutover for one operation.
+- **Phase 2**: guardrail rollout (flag → block), retire `STUDIO_MODEL` and the hardcoded key constant, account config finalized.
 
 ## Deploy view
 
@@ -181,7 +182,7 @@ flowchart LR
 
 ## Pre-mortem
 
-It is three months later and this failed. Most likely: OpenRouter had a platform outage, and with no direct-Anthropic escape hatch (decision #7), every agent went down even though Anthropic itself was fine. Quieter failure mode: prompt-cache pass-through never matched the direct-Anthropic baseline and nobody caught it before cutover, so agent cost and latency regressed silently.
+It is three months later and this failed. Most likely: OpenRouter had a platform outage, and with no direct-Anthropic escape hatch, every agent went down even though Anthropic itself was fine. Quieter failure mode: prompt-cache pass-through never matched the direct-Anthropic baseline and nobody caught it before cutover, so agent cost and latency regressed silently.
 
 ---
 
@@ -191,7 +192,6 @@ It is three months later and this failed. Most likely: OpenRouter had a platform
 |---|---|---|---|---|---|
 | 2026-08-11 | Scope stays model selection + fallback only | Also cover structured outputs, tracing, prompt versioning via OpenRouter | Those are solved elsewhere if/when needed | gifan | Decided |
 | 2026-08-11 | No per-step model config | Per-step vs. per-agent config | No multi-step use case exists today | gifan | Decided |
-| 2026-08-11 | pi-ai pass-through spike required before implementation | Trust built-in provider vs. verify first | Determines server-side vs. wrapper-side fallback | gifan | Open |
 | 2026-08-11 | Prompt-caching parity is a cutover acceptance criterion | Ship without verifying vs. gate on parity | Agent loops resend growing context; caching is cost/latency-critical | gifan | Decided |
 | 2026-08-11 | Compliance signed off on OpenRouter routing posture | — | `data_collection: deny`, `provider.only: [anthropic]`, BYOK | gifan | Decided |
 | 2026-08-11 | Keep OpenRouter's default BYOK fallback (shared credits) | Our key only, no fallback vs. shared-credit fallback | Simpler; needs a funded credit balance | gifan | Decided |
