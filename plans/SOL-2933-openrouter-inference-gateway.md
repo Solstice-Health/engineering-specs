@@ -31,11 +31,11 @@ Agents call Anthropic directly with no standard way to configure per-step model 
 
 ## 3. Approach
 
-Adopt OpenRouter as the single inference gateway, with BYOK (our Anthropic key, registered in OpenRouter's account settings, not in code or Terraform) and a thin per-agent model-config convention — not a wrapper SDK, since pi-ai already ships a native OpenRouter provider.
+Adopt OpenRouter as the single inference gateway for any agent or AI workflow, with BYOK (our Anthropic key, registered in OpenRouter's account settings, not in code or Terraform) and a thin per-agent model-config convention — not a wrapper SDK. `agent-pi` is the first migration; the same convention applies to every agent/workflow that follows, including the BE ones migrating onto Solstice-AI over the coming months (§ 2).
 
-- `agent-pi`: swap pi-ai's provider from `"anthropic"` to `"openrouter"`. Same session/tool-calling code above it; a provider-ID swap plus a `baseUrl` override pointed at OpenRouter.
-- Fallback chains are OpenRouter's server-side `models` array — no client-side retry logic.
-- `resolveModelConfig(agentName)` replaces `STUDIO_MODEL`: model + fallbacks live in a checked-in, reviewable `AgentLLMConfig`, merged with org defaults (provider pinning, data collection).
+- `agent-pi`, first: swap pi-ai's provider from `"anthropic"` to `"openrouter"`. Same session/tool-calling code above it; a provider-ID swap plus a `baseUrl` override pointed at OpenRouter — pi-ai already ships a native OpenRouter provider, so no wrapper SDK is needed for this call site.
+- Fallback chains are OpenRouter's server-side `models` array — no client-side retry logic, for `agent-pi` or any future caller.
+- `resolveModelConfig(agentName)` replaces `STUDIO_MODEL`: model + fallbacks live in a checked-in, reviewable `AgentLLMConfig` per agent, merged with org defaults (provider pinning, data collection).
 - New env vars: `OPENROUTER_BASE_URL` (non-secret), `OPENROUTER_API_KEY` (secret, if already in env) falling back to `OPENROUTER_API_KEY_SSM_PATH` (non-secret, points at the secret). No environment name is ever passed to code — each environment's Terraform supplies its own SSM path.
 - Guardrails (model/provider allowlist, budget cap, prompt-injection, PII) configured at the OpenRouter account level, dashboard-managed — see § Security and compliance.
 
@@ -46,18 +46,20 @@ Adopt OpenRouter as the single inference gateway, with BYOK (our Anthropic key, 
 ```mermaid
 flowchart LR
     classDef delta fill:#F5A623,stroke:#8A5A00,color:#1A1A1A
-    Caller["Client / caller"] --> Pi["agent-pi (pi-ai)"]
+    Caller["Client / caller"] --> Pi["Agent / workflow (agent-pi first)"]
     Pi --> OR["OpenRouter gateway"]:::delta
     OR --> Anthropic[("Anthropic, BYOK, first-party")]
     OR -.fallback on our-key failure.-> Shared[("OpenRouter shared credits")]:::delta
 ```
+
+Shape is the same for any agent or AI workflow behind the gateway; `agent-pi` is drawn in because it's the first migration.
 
 ### Flow: who calls whom, in what order
 
 ```mermaid
 sequenceDiagram
     participant C as Caller
-    participant P as agent-pi (pi-ai)
+    participant P as Agent / workflow (agent-pi first)
     participant OR as OpenRouter
     participant A as Anthropic (BYOK)
     C->>P: turn request
@@ -134,16 +136,18 @@ None.
 
 ## Migration and rollout
 
-`agent-pi` has no separate dev deployment today, just prod — this is a single cutover, staged by caution rather than by environment.
+This plan stands up the gateway, the account config, and the `resolveModelConfig` convention once — `agent-pi` is the first agent cut over. `agent-pi` has no separate dev deployment today, just prod, so its cutover is staged by caution rather than by environment.
 
 1. Register our Anthropic key as BYOK in OpenRouter's account settings (dashboard). Provision the OpenRouter API key.
 2. Configure account-level guardrails on that key: model/provider allowlist (`anthropic/*`, Anthropic provider only), a generous budget cap, prompt-injection detection in `flag` mode, PII guardrail per the category table below.
-3. Land the `resolveModelConfig` helper and `agent-pi`'s `AgentLLMConfig`.
-4. Verify prompt-cache parity on a representative operation against OpenRouter before flipping traffic.
+3. Land the `resolveModelConfig` helper and its config convention.
+4. Land `agent-pi`'s `AgentLLMConfig` and verify prompt-cache parity on a representative operation against OpenRouter before flipping traffic.
 5. Cut `agent-pi` over: swap provider, retire `STUDIO_MODEL`.
 6. Watch prompt-injection logs in `flag` mode; escalate to `block` once clean.
 7. Retire the hardcoded `/solstice/shared/ANTHROPIC_API_KEY` constant.
 8. Backout at any stage: revert the provider swap (see § Risks and rollback) — no data to unwind.
+
+Later agents and BE workflows migrating onto Solstice-AI (§ 2) reuse steps 1-2 as-is and only need their own `AgentLLMConfig` (step 3-4) — no new gateway setup.
 
 ## Security and compliance
 
@@ -167,15 +171,16 @@ None.
 
 ## Phasing and estimates
 
-- **Phase 1** (demoable): `resolveModelConfig` + `AgentLLMConfig` for `agent-pi`, cache-parity check, cutover for one operation.
+- **Phase 1** (demoable): `resolveModelConfig` convention + `agent-pi`'s `AgentLLMConfig`, cache-parity check, cutover for one operation.
 - **Phase 2**: guardrail rollout (flag → block), retire `STUDIO_MODEL` and the hardcoded key constant, account config finalized.
+- **Later, out of scope for this plan**: each additional agent/workflow migrating onto Solstice-AI (§ 2) adds its own `AgentLLMConfig` against the gateway this plan builds.
 
 ## Deploy view
 
 ```mermaid
 flowchart LR
     classDef delta fill:#F5A623,stroke:#8A5A00,color:#1A1A1A
-    ALB["ALB"] --> Pi["agent-pi (MicroVM)"]
+    ALB["ALB"] --> Pi["Agent / workflow (agent-pi, MicroVM)"]
     Pi --> OR["OpenRouter"]:::delta
     OR --> A[("Anthropic, BYOK")]
 ```
@@ -215,7 +220,7 @@ It is three months later and this failed. Most likely: OpenRouter had a platform
 
 1. Start with the four views.
 2. Read Trade-offs accepted — is the no-escape-hatch call right for this horizon?
-3. Check What exists today against your own knowledge of `agent-pi`.
+3. Check What exists today against your own knowledge of `agent-pi` and any other agent/workflow calling Anthropic directly today.
 4. Comment within 24 hours.
 5. Block only for correctness, security, or cost.
 6. Bump the tier if you spot a Tier 2 trigger missed.
