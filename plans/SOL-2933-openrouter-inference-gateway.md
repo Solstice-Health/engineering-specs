@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Ticket** | [SOL-2933](https://linear.app/solsticehealth/issue/SOL-2933/agent-platform-route-all-model-calls-through-an-inference-gateway) |
-| **Author** | @gifan |
+| **Author** | @GifanSolstice |
 | **Reviewers** | 2, one owning the inference/agent-platform domain |
 | **Tier** | 2 |
 | **Status** | Draft |
