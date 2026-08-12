@@ -69,41 +69,88 @@ We're also self-hosting Restate instead of using the vendor's Cloud offering. Cl
 flowchart LR
     classDef delta fill:#F5A623,stroke:#8A5A00,color:#1A1A1A
     BE["Backend-Server\n(domain model, CRUD, business logic)"] --> R["Restate\n(self-hosted, in-VPC)"]:::delta
-    R --> AI["Solstice-AI\n(agent execution — agent-pi first)"]
-    BE -- turns, once a sandbox is running --> AI
+    R --> AI["Solstice-AI\n(agent / workflow execution)"]
+    BE -- direct dispatch, turn-based agents only --> AI
 ```
 
-Once deployed, Restate sits only on the cold edge between BE and Solstice-AI (top path); the direct BE→AI edge is every turn after the first, which never touches it.
+Restate sits between BE and Solstice-AI. The direct BE→AI edge is specific to turn-based agents once a sandbox is running (see below); other shapes of work route differently.
 
 ### Flow: who calls whom, in what order
 
+Restate's remit today (`HtmlEditSession`) is one shape of work: a chat-style agent's sandbox lifecycle. The platform needs to fit at least three shapes, and the views below are the target for all three, not what's built — generalized past today's implementation on one point in particular: **Restate fetches and pre-processes context itself**, via BE's existing product APIs with a short-lived token scoped to the operation, rather than BE building a bundle and pushing it.
+
+**1. Turn-based (chat-style) agent** — a human waits on each response.
+
 ```mermaid
 sequenceDiagram
+    participant C as Client
     participant BE as Backend-Server
-    participant R as Restate (HtmlEditSession)
-    participant AI as Solstice-AI sandbox
-    BE->>BE: dispatch finds no live sandbox
-    BE->>R: ensure(operation_id)
-    R->>AI: launch, then health-check (durable — survives a crash mid-launch)
-    AI-->>R: healthy
-    R-->>BE: empty sandbox descriptor
-    BE->>AI: push context, then every turn directly
+    participant R as Restate
+    participant AI as Agent sandbox
+    C->>BE: turn request
+    BE->>BE: sandbox already running?
+    alt cold start only
+        BE->>R: ensure(operation)
+        R->>BE: fetch + pre-process context (scoped token)
+        R->>AI: launch, health-check, hydrate
+        R-->>BE: sandbox ready
+    end
+    BE->>AI: dispatch turn, directly
+    AI-->>BE: stream response
+    BE-->>C: relay
+```
+
+Turns bypass Restate deliberately, not by omission — two reasons. **Latency**: a durable round-trip adds real time to something that has to feel instant; that cost is worth paying once at session start, not on every message. **Journal content**: a durable-execution engine logs what passes through it, so routing every turn through Restate would put tenant content in the orchestrator's own storage on every message, not just at session start. What Restate needs to durably remember is whether a sandbox exists and is healthy — not the content of each turn, which the sandbox already holds for its own lifetime.
+
+**2. Long-lived / autonomous agent** — no human waiting on each step. Triggered by a schedule or event, runs until done. Every step benefits from durability here, since there's no user to just resend a lost message if one is dropped.
+
+```mermaid
+sequenceDiagram
+    participant T as Trigger (cron / event)
+    participant R as Restate
+    participant BE as Backend-Server
+    participant AI as Agent execution
+    T->>R: start run
+    R->>BE: fetch + pre-process context (scoped token)
+    loop durable steps, checkpointed
+        R->>AI: drive next step
+        AI-->>R: step result
+    end
+    R->>BE: persist final result
+```
+
+**3. Graph-based workflow** — the "agent" is a DAG of steps, not one loop (e.g. extract → ground → verify → assemble). Restate drives the graph; a failed node retries on its own, not the whole run.
+
+```mermaid
+flowchart LR
+    classDef delta fill:#F5A623,stroke:#8A5A00,color:#1A1A1A
+    R["Restate\n(drives the graph)"]:::delta --> N1["Extract"]
+    N1 --> N2["Ground / verify"]
+    N2 --> N3["Assemble result"]
+    N3 --> BE["Backend-Server\n(persist)"]
 ```
 
 ### Data: what changes shape
 
-*N/A — Restate keeps its own durable log, not a Postgres table; no schema change.*
+*N/A for schema — Restate keeps its own durable log, not a Postgres table. Context-fetching goes through BE's existing product APIs on a scoped token; BE keeps its DB/S3 credentials, and no new API surface is introduced.*
 
 ### State: lifecycle of the entity
 
+The general shape, across all three:
+
 ```mermaid
 stateDiagram-v2
-    [*] --> Running: ensure (cold start)
-    Running --> Suspended: idle
-    Suspended --> Running: next dispatch
-    Running --> Terminated: TTL or recycle
-    Terminated --> [*]
+    [*] --> Provisioning: triggered (turn, schedule, or event)
+    Provisioning --> Executing: context ready
+    Executing --> Idle: turn-based, between turns
+    Idle --> Executing: next turn
+    Executing --> Completed: done
+    Executing --> Failed: unrecoverable error
+    Completed --> [*]
+    Failed --> [*]
 ```
+
+`Idle` only applies to turn-based agents; the other two run `Executing` to completion in one pass. What `Executing` actually does — one loop, an autonomous run, or a graph of steps — is the Flow view above, not this one.
 
 ## 5. Trade-offs accepted
 
