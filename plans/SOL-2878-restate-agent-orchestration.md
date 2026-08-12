@@ -12,7 +12,7 @@
 > [!IMPORTANT]
 > **Tier check.**
 > - [ ] Touches auth, tenancy, or permissions
-> - [x] Handles PHI or client data in a new way — no tenant data crosses Restate today, but this doc is the record that it will as the orchestrator's scope grows; the hosting decision below is made now because of that
+> - [x] Handles PHI or client data in a new way — Restate carries no tenant data in the scope it launches with, but this doc is the record that it will as the orchestrator's scope grows; the hosting decision below is made ahead of that, before this ever goes live
 > - [ ] Schema migration on existing tables
 > - [x] New external dependency, vendor, or infrastructure — a self-hosted EC2 stack we now operate, replacing the managed Restate Cloud vendor
 > - [ ] Changes a cross-service or client-facing API contract
@@ -20,27 +20,27 @@
 
 ## 1. Problem
 
-Backend-Server (BE) and Solstice-AI need a shared substrate connecting BE's domain model and business logic to Solstice-AI's agent execution, as more agents and AI-driven workflows come online. Without one, each new agent reinvents retry, lifecycle, and durability logic in whichever repo happens to own it, and the boundary between "BE logic" and "agent logic" blurs one feature at a time. The architecture already separates BE and Solstice-AI into three planes (below), with a deliberate slot left for a durable orchestration engine; this doc records that we've filled that slot with Restate, self-hosted, and what that buys us as the platform grows past its first agent.
+Backend-Server (BE) and Solstice-AI need a shared substrate connecting BE's domain model and business logic to Solstice-AI's agent execution, as more agents and AI-driven workflows come online. Without one, each new agent reinvents retry, lifecycle, and durability logic in whichever repo happens to own it, and the boundary between "BE logic" and "agent logic" blurs one feature at a time. The architecture already separates BE and Solstice-AI into three planes (below), with a deliberate slot left for a durable orchestration engine; this doc records the decision to fill that slot with Restate, self-hosted, and what that buys us as the platform grows past its first agent.
 
 ## 2. What exists today
 
-Three planes make up the architecture today:
+**Restate is not deployed anywhere today** — nothing about it should be read as live. What exists is the split it's designed to slot into:
 
 - **Data plane (BE)** — the only thing with database/S3 credentials. Owns domain model, CRUD, and business logic; emits a raw, agent-agnostic data bundle per operation.
-- **Orchestration plane (BE, thin today)** — launches/adopts/terminates the agent's sandbox and relays its output back to the client. This is where Restate sits.
-- **Execution plane (Solstice-AI)** — owns everything about how an agent works: its playbook, tools, and workspace. `agent-pi`, the chat-driven HTML/email editing agent, is the only agent on the platform today, running in an isolated MicroVM sandbox per operation.
+- **Orchestration plane (BE, thin)** — launches/adopts/terminates the agent's sandbox and relays its output back to the client, with no durable-execution engine underneath any of it. This is the plane Restate is being introduced into.
+- **Execution plane (Solstice-AI)** — owns everything about how an agent works: its playbook, tools, and workspace. `agent-pi`, the chat-driven HTML/email editing agent, is the only agent built for the platform so far, running in an isolated MicroVM sandbox per operation.
 
-**Restate's role today is narrow, on purpose.** It's a durable-execution engine — code that survives a crash mid-run and resumes exactly where it left off, instead of restarting from scratch or silently losing state. Solstice-AI's orchestrator subproject runs one *Virtual Object* (Restate's unit of durable, serialized state — one instance per operation here) called `HtmlEditSession`, and it does exactly one job: launch a sandbox, prove it's healthy, remember it, and tear it down on a timer. It only runs on the **cold path** — the first turn of a session, when no sandbox is running yet. Every turn after that goes straight from BE to the sandbox; Restate isn't involved and never sees the tenant content in that turn.
+The `HtmlEditSession` Virtual Object (Restate's unit of durable, serialized state — one instance per operation) that will own sandbox lifecycle — launch, health-check, remember, recycle — exists as implemented code across both repos, E2E-tested, but hasn't merged or gone live in either. Section 3 and "Migration and rollout" below describe what we're introducing, not what's running. Its scope on day one is narrow — one job, cold path only (the first turn of a session, when no sandbox is running yet; every turn after that goes straight from BE to the sandbox, never through Restate) — because `agent-pi` is the only agent there is to serve, not because of any decision to hold it back. It broadens the same way from here: one agent or workflow migrating onto the substrate at a time.
 
-Until now, Restate ran on Restate Cloud, the vendor's managed offering. We're self-hosting it instead — Backend-Server PR [#1144](https://github.com/Solstice-Health/Backend-Server/pull/1144) and Solstice-AI PR [#29](https://github.com/Solstice-Health/Solstice-AI/pull/29), both open. Section 3 covers why.
+Restate Cloud, the vendor's managed offering, was the target during that development and testing — never a production dependency. We're going straight to self-hosted for the first real deployment instead: Backend-Server PR [#1144](https://github.com/Solstice-Health/Backend-Server/pull/1144) and Solstice-AI PR [#29](https://github.com/Solstice-Health/Solstice-AI/pull/29), both open. Section 3 covers why.
 
-`agent-pi` is also not the only AI-driven code in the company — it's just the only piece that's moved onto this substrate. Several agentic workflows still live directly inside Backend-Server, each calling a model provider directly with no shared durability substrate underneath them: `content_generation_new`'s `Agentic_Workflows` (the message- and HTML-generation agents), and the MLR reviewer's regulatory-check rules (`operation_management/domain/services/regulatory_checks/mlr_reviewer`). SOL-2933 already named this same set as expected to migrate onto Solstice-AI's infrastructure over time; this doc is about what they migrate onto once they do.
+`agent-pi` is also not the only AI-driven code in the company — it's just the only piece built against this substrate. Several agentic workflows already live directly inside Backend-Server, each calling a model provider directly with no shared durability substrate underneath them: `content_generation_new`'s `Agentic_Workflows` (the message- and HTML-generation agents), and the MLR reviewer's regulatory-check rules (`operation_management/domain/services/regulatory_checks/mlr_reviewer`). SOL-2933 already named this same set as expected to migrate onto Solstice-AI's infrastructure over time; this doc is about what they migrate onto once they do.
 
 ## 3. Approach
 
 The split, stated plainly: **BE owns the domain model, CRUD, and business logic. Solstice-AI owns how agents and AI workflows work. Restate is the durable-orchestration glue between them** — the thing that lets BE treat Solstice-AI as a service it calls, instead of a set of internals it has to reach into and coordinate by hand.
 
-Today that glue does one job (sandbox lifecycle, cold path only). The direction is to grow it as more agents and workflows come online, rather than have each one bring its own retry/lifecycle logic into whichever repo it started in. Section 4 (Migration and rollout, Tier 2) lays out candidate next workloads; none of them are in scope for this doc — it sets the direction, it doesn't move them yet.
+This doc introduces that glue scoped to one job: sandbox lifecycle, cold path only. The direction from there is to grow it as more agents and workflows come online, rather than have each one bring its own retry/lifecycle logic into whichever repo it started in. Section 4 (Migration and rollout, Tier 2) lays out candidate next workloads; none of them are in scope for this doc — it sets the direction, it doesn't move them yet.
 
 Alongside that, we're self-hosting the Restate server rather than staying on the vendor's Cloud offering — one EC2 instance in our VPC instead of a managed endpoint outside it. Section 5 covers the trade-off; the short version is that self-hosting keeps orchestration data in our own network as its scope grows, and positions us to offer on-premises deployments of the platform later, at the cost of operating the node ourselves.
 
@@ -52,11 +52,11 @@ Alongside that, we're self-hosting the Restate server rather than staying on the
 flowchart LR
     classDef delta fill:#F5A623,stroke:#8A5A00,color:#1A1A1A
     BE["Backend-Server\n(domain model, CRUD, business logic)"] --> R["Restate\n(self-hosted, in-VPC)"]:::delta
-    R --> AI["Solstice-AI\n(agent execution — agent-pi today)"]
+    R --> AI["Solstice-AI\n(agent execution — agent-pi first)"]
     BE -- turns, once a sandbox is running --> AI
 ```
 
-Restate sits only on the cold edge between BE and Solstice-AI today (top path); the direct BE→AI edge is every turn after the first, which never touches it.
+Once deployed, Restate sits only on the cold edge between BE and Solstice-AI (top path); the direct BE→AI edge is every turn after the first, which never touches it.
 
 ### Flow: who calls whom, in what order
 
@@ -113,8 +113,8 @@ stateDiagram-v2
   | AZ outage | Down until restored, or restored into another AZ | Up to an hour of journal |
 
   Losing journal state isn't corruption: Restate forgets a sandbox it doesn't remember, the next dispatch launches a fresh one, and the user loses agent memory for that session — a cold-relaunch behavior Solstice-AI's README already documents and accepts.
-- **Rollback**: point `RESTATE_INGRESS_URL` back at Restate Cloud and re-register, as long as the journal has stayed tenant-data-free. That's true today. It stops being true once orchestration scope grows to carry real content (Section 3) — which is exactly why this decision is made now, while reversing it is still a config change rather than a data-migration problem.
-- **Tenancy/PHI**: no tenant data crosses Restate today. The premise of this doc is that this changes as scope grows; the hosting decision is made ahead of that, not after.
+- **Rollback**: register the same deployment against Restate Cloud instead of the self-hosted node, provided the journal has stayed tenant-data-free — true at launch. It stops being true once orchestration scope grows to carry real content (Section 3), which is exactly why the hosting decision is made now, before this ever goes live, rather than after.
+- **Tenancy/PHI**: no tenant data crosses Restate in the scope it launches with. The premise of this doc is that this changes as scope grows; the hosting decision is made ahead of that, not after.
 
 ## 8. Verification
 
@@ -147,9 +147,9 @@ stateDiagram-v2
 
 ## Security and compliance
 
-- No tenant data crosses Restate today; the empty-sandbox handoff pattern holds (Restate provisions, BE pushes context directly to the sandbox afterward).
+- No tenant data crosses Restate in the scope it launches with; the empty-sandbox handoff pattern holds (Restate provisions, BE pushes context directly to the sandbox afterward).
 - That changes as scope grows into context-refresh, extraction, and multi-step workflows. Self-hosting is the decision that keeps that data in our own VPC when it does, rather than with a vendor.
-- This doc introduces no new external data processor. If anything, self-hosting removes one that existed under Restate Cloud.
+- This doc introduces no new external data processor. If anything, going straight to self-hosted means Restate Cloud never becomes one.
 
 ## Phasing and estimates
 
