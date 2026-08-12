@@ -63,6 +63,17 @@ Day-one scope is narrow — cold path only, the first turn of a session when no 
 
 We're also self-hosting Restate instead of using the vendor's Cloud offering. Cloud was only ever the dev/test target — this is a first-deployment decision, not a migration off something live. Short version (trade-off in Section 5): self-hosting keeps orchestration data in our network as scope grows, and keeps on-prem deployment realistic, at the cost of operating the node ourselves. Backend-Server PR [#1144](https://github.com/Solstice-Health/Backend-Server/pull/1144) and Solstice-AI PR [#29](https://github.com/Solstice-Health/Solstice-AI/pull/29), both open.
 
+Restate itself splits into two deployables on two different lifecycles. The **server** — the durable engine holding the journal — is the self-hosted EC2 node above. The **services** — the actual Virtual Object/workflow code, like `HtmlEditSession` — deploy separately, as versioned Lambda functions the server invokes:
+
+```mermaid
+flowchart LR
+    classDef delta fill:#F5A623,stroke:#8A5A00,color:#1A1A1A
+    BE["Backend-Server"] --> RS["Restate server\n(self-hosted EC2)"]:::delta
+    RS -- invoke, pinned version --> L["Restate service\n(Lambda, e.g. HtmlEditSession)"]:::delta
+```
+
+Every deploy publishes an immutable Lambda version; CI registers that exact version's ARN with the server. The server pins any in-flight invocation to the version it registered — never a moving target, because replaying a durable execution against different code than what produced the journal is unsafe. It also keeps the two lifecycles apart on purpose, the same separation this doc argues for elsewhere: the engine is stateful, rarely changes, and needs its own operational care (Section 5); service code is stateless per invocation, ships as often as a feature does, and scales on its own via Lambda — nobody provisions a server just to add a new Virtual Object.
+
 ## 4. System views
 
 ### Context: where it sits
@@ -104,14 +115,14 @@ sequenceDiagram
 
 Turns bypass Restate deliberately, not by omission — two reasons. **Latency**: a durable round-trip adds real time to something that has to feel instant; that cost is worth paying once at session start, not on every message. **Journal content**: a durable-execution engine logs what passes through it, so routing every turn through Restate would put tenant content in the orchestrator's own storage on every message, not just at session start. What Restate needs to durably remember is whether a sandbox exists and is healthy — not the content of each turn, which the sandbox already holds for its own lifetime.
 
-**2. Long-lived / autonomous agent** — no human waiting on each step. Triggered by a schedule or event, runs until done. Every step benefits from durability here, since there's no user to just resend a lost message if one is dropped.
+**2. Long-lived / autonomous agent** — sandboxed the same way as the turn-based case, but not chat-driven: nothing waits on a per-turn response, so it runs on its own once triggered, by a schedule or an event. We take no position on what runs inside the sandbox — it doesn't have to be `agent-pi`'s harness, or a coding-agent harness at all. Every step benefits from durability here, since there's no user to just resend a lost message if one drops.
 
 ```mermaid
 sequenceDiagram
     participant T as Trigger (cron / event)
     participant R as Restate
     participant BE as Backend-Server
-    participant AI as Agent execution
+    participant AI as Agent sandbox
     T->>R: start run
     R->>BE: fetch + pre-process context (scoped token)
     loop durable steps, checkpointed
