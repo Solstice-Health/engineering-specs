@@ -20,11 +20,11 @@
 
 ## 1. Problem
 
-Backend-Server (BE) and Solstice-AI need a shared substrate connecting BE's domain model and business logic to Solstice-AI's agent execution, as more agents and AI-driven workflows come online. Without one, each new agent reinvents retry, lifecycle, and durability logic in whichever repo happens to own it, and the boundary between "BE logic" and "agent logic" blurs one feature at a time. `AGENT_BACKEND_SEPARATION.md` already names this a three-plane problem and reserves a slot for a durable orchestration engine; this doc records that we've filled that slot with Restate, self-hosted, and what that buys us as the platform grows past its first agent.
+Backend-Server (BE) and Solstice-AI need a shared substrate connecting BE's domain model and business logic to Solstice-AI's agent execution, as more agents and AI-driven workflows come online. Without one, each new agent reinvents retry, lifecycle, and durability logic in whichever repo happens to own it, and the boundary between "BE logic" and "agent logic" blurs one feature at a time. The architecture already separates BE and Solstice-AI into three planes (below), with a deliberate slot left for a durable orchestration engine; this doc records that we've filled that slot with Restate, self-hosted, and what that buys us as the platform grows past its first agent.
 
 ## 2. What exists today
 
-Three planes, as already documented in `Backend-Server/docs/AGENT_BACKEND_SEPARATION.md`:
+Three planes make up the architecture today:
 
 - **Data plane (BE)** — the only thing with database/S3 credentials. Owns domain model, CRUD, and business logic; emits a raw, agent-agnostic data bundle per operation.
 - **Orchestration plane (BE, thin today)** — launches/adopts/terminates the agent's sandbox and relays its output back to the client. This is where Restate sits.
@@ -98,7 +98,7 @@ stateDiagram-v2
 
 - Alternative: stay on Restate Cloud, and keep the journal free of tenant content by convention as scope grows. Rejected — that discipline is enforced only by code review; it takes one workflow author routing real content through a durable step, once, for it to silently fail.
 - Alternative: Temporal or AWS Step Functions as the durable-execution engine. Not re-evaluated for this decision — Restate was already the adopted engine, chosen during the earlier MicroVM/EditSandbox design work. This doc records the operating model built on that choice, not a re-pick of the engine.
-- Alternative: keep building per-agent retry/lifecycle logic directly in Backend-Server as each new agent or workflow needs it. Rejected — this is exactly the coupling the three-plane split in `AGENT_BACKEND_SEPARATION.md` already exists to remove, and it doesn't scale past one agent.
+- Alternative: keep building per-agent retry/lifecycle logic directly in Backend-Server as each new agent or workflow needs it. Rejected — this is exactly the coupling the three-plane split above already exists to remove, and it doesn't scale past one agent.
 
 ## 7. Risks and rollback
 
