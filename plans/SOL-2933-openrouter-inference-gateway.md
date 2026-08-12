@@ -152,7 +152,7 @@ Later agents and BE workflows migrating onto Solstice-AI (§ 2) reuse steps 1-2 
 ## Security and compliance
 
 - BYOK keeps the Anthropic key out of the request path — no Solstice process holds it; it lives only in OpenRouter's account settings.
-- Per-request `provider: {only: ["anthropic"], allow_fallbacks: false, data_collection: "deny"}` pins to Anthropic first-party and excludes providers that log or train on prompts. Enforced again at the account level via the model/provider allowlist, so a misconfigured request can't bypass it.
+- Per-request `provider: {only: ["anthropic"], data_collection: "deny"}` pins to Anthropic first-party and excludes providers that log or train on prompts — `only` constrains the whole candidate set, fallback providers included. Enforced again at the account level via the model/provider allowlist, so a misconfigured request can't bypass it. Deliberately no `allow_fallbacks: false`: combined with BYOK "Always use for this provider" it prunes the BYOK endpoint too and every request fails with "No endpoints found" (found live during rollout), and it would also client-side disable the shared-credit fallback the decision log keeps.
 - Prompt-injection guardrail: start `flag`, escalate to `block` once logs are clean. Never `redact` — silently mutating a message mid-edit-loop is a content-corruption failure mode.
 - PII guardrail, per category:
 
@@ -202,6 +202,7 @@ It is three months later and this failed. Most likely: OpenRouter had a platform
 | 2026-08-11 | Keep OpenRouter's default BYOK fallback (shared credits) | Our key only, no fallback vs. shared-credit fallback | Simpler; needs a funded credit balance | gifan | Decided |
 | 2026-08-11 | No direct-Anthropic escape hatch | Keep a bypass flag vs. OpenRouter-only | OpenRouter is meant to absorb provider-level failures; its own uptime is the residual risk we carry | gifan | Decided |
 | 2026-08-11 | Account config stays dashboard-managed, not Terraform | `OpenRouterTeam/openrouter` provider vs. manual | v0.2.x maturity; config is low-churn and non-critical | gifan | Decided |
+| 2026-08-12 | Per-request pin drops `allow_fallbacks: false` | Keep the full spec-drafted triple vs. `only` + `data_collection` | Redundant under `only`; breaks all routing under BYOK "Always use for this provider" ("No endpoints found"); would client-side disable the shared-credit fallback kept above | gifan | Decided |
 
 ## Sign-off
 
