@@ -24,25 +24,42 @@ Backend-Server (BE) and Solstice-AI need a shared substrate connecting BE's doma
 
 ## 2. What exists today
 
-**Restate is not deployed anywhere today** — nothing about it should be read as live. What exists is the split it's designed to slot into:
-
 - **Data plane (BE)** — the only thing with database/S3 credentials. Owns domain model, CRUD, and business logic; emits a raw, agent-agnostic data bundle per operation.
-- **Orchestration plane (BE, thin)** — launches/adopts/terminates the agent's sandbox and relays its output back to the client, with no durable-execution engine underneath any of it. This is the plane Restate is being introduced into.
+- **Orchestration plane (BE)** — launches, health-checks, and dispatches to the agent's sandbox, and relays its output back to the client.
 - **Execution plane (Solstice-AI)** — owns everything about how an agent works: its playbook, tools, and workspace. `agent-pi`, the chat-driven HTML/email editing agent, is the only agent built for the platform so far, running in an isolated MicroVM sandbox per operation.
 
-The `HtmlEditSession` Virtual Object (Restate's unit of durable, serialized state — one instance per operation) that will own sandbox lifecycle — launch, health-check, remember, recycle — exists as implemented code across both repos, E2E-tested, but hasn't merged or gone live in either. Section 3 and "Migration and rollout" below describe what we're introducing, not what's running. Its scope on day one is narrow — one job, cold path only (the first turn of a session, when no sandbox is running yet; every turn after that goes straight from BE to the sandbox, never through Restate) — because `agent-pi` is the only agent there is to serve, not because of any decision to hold it back. It broadens the same way from here: one agent or workflow migrating onto the substrate at a time.
+Concretely, the orchestration plane's control flow today (`src_v2/html_edit/orchestrator.py`):
 
-Restate Cloud, the vendor's managed offering, was the target during that development and testing — never a production dependency. We're going straight to self-hosted for the first real deployment instead: Backend-Server PR [#1144](https://github.com/Solstice-Health/Backend-Server/pull/1144) and Solstice-AI PR [#29](https://github.com/Solstice-Health/Solstice-AI/pull/29), both open. Section 3 covers why.
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant BE as Backend-Server
+    participant S as agent-pi sandbox
+    C->>BE: turn request
+    BE->>BE: check RunnerState (operation_metadata JSONB)
+    alt no live sandbox
+        BE->>BE: acquire per-operation lock (this process only)
+        BE->>S: launch + health-check
+        BE->>S: push context bundle
+    end
+    BE->>S: dispatch turn
+    S-->>BE: stream of internal events
+    BE-->>C: relay (SSE), persist terminal event
+```
 
-`agent-pi` is also not the only AI-driven code in the company — it's just the only piece built against this substrate. Several agentic workflows already live directly inside Backend-Server, each calling a model provider directly with no shared durability substrate underneath them: `content_generation_new`'s `Agentic_Workflows` (the message- and HTML-generation agents), and the MLR reviewer's regulatory-check rules (`operation_management/domain/services/regulatory_checks/mlr_reviewer`). SOL-2933 already named this same set as expected to migrate onto Solstice-AI's infrastructure over time; this doc is about what they migrate onto once they do.
+This works, but it's not where we want to stay. Sandbox lifecycle is hand-orchestrated inside BE (`DockerOrchestrator`/`MicrovmOrchestrator`), with state tracked in a JSONB column rather than anything durable — a crash mid-launch has no replay story, just whatever the next request happens to find. The lock guarding a launch is per-process (`asyncio.Lock`, keyed on operation id): real protection against two concurrent requests on the same worker, none against two different workers. BE runs gunicorn multi-worker in production, so two workers can each find no live sandbox for the same operation and both launch one — nothing here makes that impossible, only unlikely. And because this logic is written directly in BE for `agent-pi` specifically, a second agent means writing it again, not reusing a shared primitive — exactly the reinvention named in Section 1.
+
+`agent-pi` is also not the only AI-driven code in the company. Several agentic workflows already live directly inside Backend-Server, each calling a model provider directly: `content_generation_new`'s `Agentic_Workflows` (the message- and HTML-generation agents), and the MLR reviewer's regulatory-check rules (`operation_management/domain/services/regulatory_checks/mlr_reviewer`). SOL-2933 already named this same set as expected to migrate onto Solstice-AI's infrastructure over time.
 
 ## 3. Approach
 
-The split, stated plainly: **BE owns the domain model, CRUD, and business logic. Solstice-AI owns how agents and AI workflows work. Restate is the durable-orchestration glue between them** — the thing that lets BE treat Solstice-AI as a service it calls, instead of a set of internals it has to reach into and coordinate by hand.
+The split, stated plainly: **BE owns the domain model, CRUD, and business logic. Solstice-AI owns how agents and AI workflows work. Restate is the durable-orchestration glue between them** — the thing that lets BE treat Solstice-AI as a service it calls, instead of hand-rolling sandbox lifecycle and its race conditions in application code, per agent.
 
-This doc introduces that glue scoped to one job: sandbox lifecycle, cold path only. The direction from there is to grow it as more agents and workflows come online, rather than have each one bring its own retry/lifecycle logic into whichever repo it started in. Section 4 (Migration and rollout, Tier 2) lays out candidate next workloads; none of them are in scope for this doc — it sets the direction, it doesn't move them yet.
+Concretely, that means replacing the flow in Section 2 with a durable *Virtual Object* (Restate's unit of durable, serialized state — one instance per operation) called `HtmlEditSession`: it launches the sandbox, proves it's healthy, remembers it, and tears it down on a timer, with per-key serialization that makes the two-workers-both-launch race structurally impossible rather than merely unlikely. It exists as implemented code across both repos, E2E-tested, but **isn't deployed anywhere yet** — nothing about it should be read as live today.
 
-Alongside that, we're self-hosting the Restate server rather than staying on the vendor's Cloud offering — one EC2 instance in our VPC instead of a managed endpoint outside it. Section 5 covers the trade-off; the short version is that self-hosting keeps orchestration data in our own network as its scope grows, and positions us to offer on-premises deployments of the platform later, at the cost of operating the node ourselves.
+Its scope on day one is narrow — cold path only (the first turn of a session, when no sandbox is running yet; every turn after that goes straight from BE to the sandbox) — because `agent-pi` is the only agent there is to serve, not because of any decision to hold it back. It broadens the same way from here: one agent or workflow migrating onto it at a time. Section 4 (Migration and rollout, Tier 2) lays out candidates; none of them are in scope for this doc — it introduces the substrate, it doesn't move them onto it yet.
+
+Alongside that, we're self-hosting the Restate server rather than using the vendor's Cloud offering. Restate Cloud was the target during development and testing, never a production dependency — this is a decision about the first real deployment, not a migration off something already live. Section 5 covers the trade-off; the short version is that self-hosting keeps orchestration data in our own network as its scope grows, and positions us to offer on-premises deployments of the platform later, at the cost of operating the node ourselves. Backend-Server PR [#1144](https://github.com/Solstice-Health/Backend-Server/pull/1144) and Solstice-AI PR [#29](https://github.com/Solstice-Health/Solstice-AI/pull/29), both open.
 
 ## 4. System views
 
