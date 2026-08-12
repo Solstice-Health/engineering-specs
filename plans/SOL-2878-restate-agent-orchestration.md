@@ -136,24 +136,6 @@ flowchart LR
 
 *N/A for schema — Restate keeps its own durable log, not a Postgres table. Context-fetching goes through BE's existing product APIs on a scoped token; BE keeps its DB/S3 credentials, and no new API surface is introduced.*
 
-### State: lifecycle of the entity
-
-The general shape, across all three:
-
-```mermaid
-stateDiagram-v2
-    [*] --> Provisioning: triggered (turn, schedule, or event)
-    Provisioning --> Executing: context ready
-    Executing --> Idle: turn-based, between turns
-    Idle --> Executing: next turn
-    Executing --> Completed: done
-    Executing --> Failed: unrecoverable error
-    Completed --> [*]
-    Failed --> [*]
-```
-
-`Idle` only applies to turn-based agents; the other two run `Executing` to completion in one pass. What `Executing` actually does — one loop, an autonomous run, or a graph of steps — is the Flow view above, not this one.
-
 ## 5. Trade-offs accepted
 
 - We accept operating a single EC2 node — our own patch/upgrade cadence, a single-AZ availability window — to get orchestration data inside our own VPC now, and to keep whole-platform on-premises deployment realistic later. Revisit if we ever run a real Kubernetes footprint for an unrelated reason, which would make a proper multi-node cluster cheap instead of a dedicated build.
