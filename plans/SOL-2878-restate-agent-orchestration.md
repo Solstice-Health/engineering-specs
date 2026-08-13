@@ -61,7 +61,7 @@ Concretely: replace Section 2's flow with a *Virtual Object* (Restate's unit of 
 
 Day-one scope is narrow — cold path only, the first turn of a session when no sandbox is running yet; every turn after that goes straight from BE to the sandbox. That's narrow because `agent-pi` is the only agent, not by design. It broadens as each new agent or workflow migrates onto it, one at a time — candidates are in "Migration and rollout" below, out of scope for this doc.
 
-We're also self-hosting Restate instead of using the vendor's Cloud offering. Cloud was only ever the dev/test target — this is a first-deployment decision, not a migration off something live. Short version (trade-off in Section 5): self-hosting keeps orchestration data in our network as scope grows, and keeps on-prem deployment realistic, at the cost of operating the node ourselves. Backend-Server PR [#1144](https://github.com/Solstice-Health/Backend-Server/pull/1144) and Solstice-AI PR [#29](https://github.com/Solstice-Health/Solstice-AI/pull/29), both open.
+We're also self-hosting Restate instead of using the vendor's Cloud offering. Cloud was only ever the dev/test target — this is a first-deployment decision, not a migration off something live. Short version (trade-off in Section 5): self-hosting keeps orchestration data in our network as scope grows, and keeps on-prem deployment realistic, at the cost of operating the node ourselves.
 
 Restate itself splits into two deployables on two different lifecycles. The **server** — the durable engine holding the journal — is the self-hosted EC2 node above. The **services** — the actual Virtual Object/workflow code, like `HtmlEditSession` — deploy separately, as versioned Lambda functions the server invokes:
 
@@ -178,7 +178,7 @@ flowchart LR
 ## 8. Verification
 
 - The self-hosted node has passed the existing E2E test plan (`html-edit-agent/orchestrator/E2E-TEST-PLAN.md`): turn, accept, reject, interrupt, and hard-kill-the-orchestrator all pass, including one exact-once-replay check after a kill mid-turn.
-- Before this is treated as done rather than building: one rehearsed snapshot restore, one rehearsed minor-version upgrade, and a few weeks of disk/memory data from the running node to size it properly (see PR #1144's open items).
+- Before this is treated as done rather than building: one rehearsed snapshot restore, one rehearsed minor-version upgrade, and a few weeks of disk/memory data from the running node to size it properly.
 - Post-ship signal: cold-path latency (`ensure` duration) and node health alarms (disk, memory, process).
 
 ## 9. Open questions
@@ -198,7 +198,7 @@ flowchart LR
 
 ## Migration and rollout
 
-- **Phase 0 (this doc, Building)** — self-hosted Restate server in our VPC, sandbox lifecycle only. Backend-Server PR #1144, Solstice-AI PR #29.
+- **Phase 0 (this doc, Building)** — self-hosted Restate server in our VPC, sandbox lifecycle only.
 - **Phase 1** — extend Restate's remit inside Solstice-AI to jobs that refresh an agent session's context, and to workflows that coordinate more than one sandbox at once. Both are natural extensions of what it already does (one durable unit of work per operation); neither needs a new architectural idea.
 - **Phase 2** — a shared file/document-extraction service behind Restate, callable as a tool by any agent or BE workflow. This is the strongest concrete candidate found: PDF/document handling today is scattered across dozens of ad hoc call sites in Backend-Server, and adoption of the one shared safety mechanism that exists for a real concurrency hazard in the PDF library we use is thin — most call sites bypass it. A shared, durable extraction service closes that gap by construction (nobody touches the hazard directly) rather than by convention (everybody remembers to use the wrapper). Whether that gap is currently live in production traffic is unconfirmed; the adoption gap itself is not.
 - **Phase 3** — migrate one real BE-resident workflow onto Solstice-AI's execution plane end to end (the `Agentic_Workflows` or MLR regulatory-check rules named in Section 2 are the candidates), to prove the substrate generalizes past `agent-pi`.
