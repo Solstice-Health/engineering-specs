@@ -12,7 +12,7 @@
 > [!IMPORTANT]
 > **Tier check.**
 > - [ ] Touches auth, tenancy, or permissions
-> - [x] Handles PHI or client data in a new way — Restate carries no tenant data in the scope it launches with, but this doc is the record that it will as the orchestrator's scope grows; the hosting decision below is made ahead of that, before this ever goes live
+> - [x] Handles PHI or client data in a new way — no tenant data crosses Restate yet; hosting is decided ahead of that changing (see "Security and compliance")
 > - [ ] Schema migration on existing tables
 > - [x] New external dependency, vendor, or infrastructure — a self-hosted EC2 stack we now operate, replacing the managed Restate Cloud vendor
 > - [ ] Changes a cross-service or client-facing API contract
@@ -47,7 +47,7 @@ sequenceDiagram
     BE-->>C: relay (SSE), persist terminal event
 ```
 
-This works, but it's not where we want to stay — mainly because of what BE has to know to make it work, not because of how well it works. `orchestrator.py` doesn't just call Solstice-AI as a service; it knows how to launch a sandbox on two different runtimes (Docker locally, MicroVM in prod), mint and refresh MicroVM auth tokens, and check the agent's image against a contract version. That's all knowledge of how the agent works, sitting in BE — exactly the thing the split in Section 3 says BE shouldn't need to carry.
+This works, but it's not where we want to stay: `orchestrator.py` doesn't just call Solstice-AI as a service — it knows how to launch a sandbox on two different runtimes (Docker locally, MicroVM in prod), mint and refresh MicroVM auth tokens, and check the agent's image against a contract version. That's knowledge of how the agent works, sitting in BE — exactly what the split in Section 3 says BE shouldn't need to carry.
 
 Durability is a real problem on top of that, but a secondary one: state lives in a JSONB column with no replay story for a crash mid-launch, and the lock guarding a launch is per-process (`asyncio.Lock`), so two gunicorn workers can each find no live sandbox for the same operation and both launch one — real, just unlikely. And because all of this is written directly in BE for `agent-pi` specifically, a second agent means writing it again, not reusing a shared primitive — exactly the reinvention named in Section 1.
 
@@ -151,7 +151,7 @@ flowchart LR
 
 - We accept operating a single EC2 node — our own patch/upgrade cadence, a single-AZ availability window — to get orchestration data inside our own VPC now, and to keep whole-platform on-premises deployment realistic later. Revisit if we ever run a real Kubernetes footprint for an unrelated reason, which would make a proper multi-node cluster cheap instead of a dedicated build.
 - We accept keeping Restate's scope narrow (sandbox lifecycle only) for now, and turns/context-building bypassing it, rather than taking on durable multi-step orchestration before anything besides `agent-pi` needs it. Revisit when a second workload (Section "Migration and rollout" below) actually moves onto this substrate.
-- We accept single-node, single-AZ availability risk on the cold path specifically — an AZ incident blocks *new* sandbox launches until the node recovers, but does not affect sandboxes already running, since turns don't go through Restate. Revisit if that blast radius grows (once Restate carries turns or context-building, its downtime means more than "can't start a new session") or if uptime requirements on the cold path tighten before then.
+- We accept single-node, single-AZ availability risk, scoped to the cold path only — mechanism and blast radius detailed in Section 7 (SPOF note + failure-mode table). Revisit if that blast radius grows (once Restate carries turns or context-building) or if uptime requirements on the cold path tighten before then.
 
 ## 6. Alternatives rejected
 
@@ -173,7 +173,7 @@ flowchart LR
 
   Losing journal state isn't corruption: Restate forgets a sandbox it doesn't remember, the next dispatch launches a fresh one, and the user loses agent memory for that session — a cold-relaunch behavior Solstice-AI's README already documents and accepts.
 - **Rollback**: register the same deployment against Restate Cloud instead of the self-hosted node, provided the journal has stayed tenant-data-free — true at launch. It stops being true once orchestration scope grows to carry real content (Section 3), which is exactly why the hosting decision is made now, before this ever goes live, rather than after.
-- **Tenancy/PHI**: no tenant data crosses Restate in the scope it launches with. The premise of this doc is that this changes as scope grows; the hosting decision is made ahead of that, not after.
+- **Tenancy/PHI**: no tenant data crosses Restate today — the same fact the Rollback note above depends on (full framing in "Security and compliance").
 
 ## 8. Verification
 
