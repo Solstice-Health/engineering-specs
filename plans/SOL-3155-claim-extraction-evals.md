@@ -4,7 +4,7 @@
 |---|---|
 | **Ticket** | [SOL-3155](https://linear.app/solsticehealth/issue/SOL-3155) |
 | **Author** | @abhipsha16 |
-| **Reviewers** | @arindam-sharma · @eeva-ff |
+| **Reviewers** | @arindam-sharma · @eeva-ff · @bensolstice |
 | **Tier** | 1 |
 | **Status** | Draft |
 | **Date** | 2026-08-17 |
@@ -198,3 +198,4 @@ F4 on it, or the scorer is wrong.
 |---|---|---|---|
 | @arindam-sharma | | | |
 | @eeva-ff | | | |
+| @bensolstice | | | |

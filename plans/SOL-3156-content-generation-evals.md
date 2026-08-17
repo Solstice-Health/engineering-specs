@@ -4,7 +4,7 @@
 |---|---|
 | **Ticket** | [SOL-3156](https://linear.app/solsticehealth/issue/SOL-3156) |
 | **Author** | @abhipsha16 |
-| **Reviewers** | @arindam-sharma · @eeva-ff |
+| **Reviewers** | @arindam-sharma · @eeva-ff · @bensolstice |
 | **Tier** | 1 |
 | **Status** | Draft |
 | **Date** | 2026-08-17 |
@@ -201,3 +201,4 @@ detected). T1 gates in CI immediately once R1 exists — deterministic, no spend
 |---|---|---|---|
 | @arindam-sharma | | | |
 | @eeva-ff | | | |
+| @bensolstice | | | |
