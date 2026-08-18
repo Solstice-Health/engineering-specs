@@ -175,6 +175,13 @@ flowchart LR
     MV --> IMG["html-edit-agent image (updated)"]:::delta
 ```
 
+## Additional experiments in flight
+
+Running alongside the plan, not part of it; results land in the decision log.
+
+1. **Raw brand PDFs as context** — skip the derived identity files (`brand/*.md`, `tokens.md`) and give the agent the brand-guide PDF directly (vision), letting it derive its own token sheet per generation. Tests whether the deterministic distillation loses design signal the model could use. Judged against the token-sheet path on the §8 bar check.
+2. **Parallel variations + relative ranking** — N agents generate the same brief under different design directions; a multimodal judge picks the final HTML by relative ranking (rank, never absolute score). This is §5's deferred best-of-N — a clear win here fires that revisit trigger early.
+
 ---
 
 ## Decision log
