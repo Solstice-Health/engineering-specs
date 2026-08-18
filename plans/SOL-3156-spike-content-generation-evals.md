@@ -35,19 +35,19 @@ This spike exists so the generation pack’s tests are leftover failures only: b
 | Candidate | Why it is in the running |
 |---|---|
 | B. Deterministic leftovers | Attribution already computed and currently wrong. `_verify_claims_used` unions UUID self-report into `claims_used` and sets `match_rate = 1.0` when HTML has no markers (`content_message_generator_v3_agent_sqlalchemy.py:1519–1529`). Render-success is unused as a gate |
-| C. Judged asset support | “Does the HTML state anything the evidence set does not support?” — needs a paired baseline and R2 overlap with retrieval. Includes helper **copy** rules (ARs as sentence vs table, one KM curve, disclaimers, dosing-before-safety as reading order) that T5 does not score |
-| D. Interview / intake coverage | Did we ask the question that made the right query possible — may already be absorbed by retrieval T1 if Q&A is scripted |
+| C. Judged asset support | “Does the HTML state anything the evidence set does not support?” — needs a paired baseline and R2 overlap with retrieval. Includes helper **copy** rules (ARs as sentence vs table, one KM curve, disclaimers, dosing-before-safety as reading order) that T6 does not score |
+| D. Interview / intake coverage | Did we ask the question that made the right query possible — may already be absorbed by retrieval T2 if Q&A is scripted |
 
 B is the floor. C and D are in if the walk shows failures that B cannot catch.
 
 Helper split (same file, two packs):
 
-| Helper says | Retrieval (3155 T5) | This pack |
+| Helper says | Retrieval (3155 T6) | This pack |
 |---|---|---|
 | Must include study-design + safety groups from the same trial | yes | — |
 | Post-hoc cannot stand without Phase 3 foundation groups | yes | — |
 | ARs ≥10% / SAEs ≥2% as copy; one KM; disclaimers | only if those live in a distinct group | C if walk shows they fail after groups were chosen |
-| Dosing before safety on the page | T5: both groups present | C: order |
+| Dosing before safety on the page | T6: both groups present | C: order |
 
 Blueprint stuffing (`_build_domain_guidance_for_piece`) prefers `detected_domains` → first-4 keywords over raw brief text. A generation walk that ignores that will mis-attribute “wrong domain rules in the prompt” as a copy failure.
 
@@ -59,7 +59,7 @@ Blueprint stuffing (`_build_domain_guidance_for_piece`) prefers `detected_domain
 4. Do not run a new Braintrust suite in this spike. Read existing operations and, where needed, the run record SOL-3155 will require.
 5. On attribution: compare `_extract_claims_from_html` to `_verify_claims_used` on the same HTML. A mismatch is B, not C.
 
-v3 only.
+v3 only. Domain rules that constrain *which groups must be present* belong to SOL-3155 T6. Domain rules that constrain *how copy is written from a chosen group* belong in this pack if the walk finds they fail independently of retrieval.
 
 ## Exit criteria
 
@@ -71,19 +71,13 @@ v3 only.
 
 ```mermaid
 flowchart LR
-    Brief["Brief"] --> Retr["Retrieval funnel"]
-    Retr -->|"evidence set"| Gen["Generation blueprint → HTML"]
-    Gen --> Asset["Finished asset"]
-    classDef userNode fill:#dbeafe,stroke:#2563eb,stroke-width:1.5px,color:#1e3a8a
-    classDef parseNode fill:#e0e7ff,stroke:#6366f1,stroke-width:1.5px,color:#312e81
-    classDef effectNode fill:#fef3c7,stroke:#d97706,stroke-width:1.5px,color:#78350f
-    class Brief userNode
-    class Retr parseNode
-    class Gen effectNode
-    class Asset effectNode
+    classDef delta fill:#F5A623,stroke:#8A5A00,color:#1A1A1A
+    Brief["Brief"] --> Retr["Retrieval funnel<br/>SOL-3155"]
+    Retr -->|"evidence set"| Gen["Generation<br/>blueprint → HTML"]:::delta
+    Gen --> Asset["Finished asset"]:::delta
 ```
 
-Amber/effect is this spike. Retrieval is SOL-3155.
+Amber is this spike. Retrieval is the other file.
 
 ## Deviations from the brief
 
@@ -96,11 +90,11 @@ Amber/effect is this spike. Retrieval is SOL-3155.
 | Bucket | Count | Notes |
 |---|---|---|
 | Retrieval miss | | SOL-3155, not this pack |
-| Selection miss | | SOL-3155 T3 |
-| Utilization miss | | SOL-3155 T4 (HTML parse, not reconciler) |
+| Selection miss | | SOL-3155 T4 |
+| Utilization miss | | SOL-3155 T5 (HTML parse, not reconciler) |
 | Unsupported / altered copy with evidence present | | C |
 | Attribution lie (F8/F9) | | B — already confirmed in code; walk counts how often it fires on real HTML |
-| Interview miss | | D, unless already T1 |
+| Interview miss | | D, unless already T2 |
 | Other (layout, ISI, template) | | |
 
 ## Recommendation
