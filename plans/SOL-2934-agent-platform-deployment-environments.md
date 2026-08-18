@@ -139,10 +139,15 @@ or prod's deployment.
 
 ### 3.4 Terraform
 
-Both AI stacks — the image stack and the services stack — become
-environment-agnostic: environment-shaped defaults deleted, one variable file and one
-backend config per environment, passed at init and apply. Ephemeral generates both
-per PR. Prod's state keys stay byte-identical, so the refactor plans clean.
+Both AI stacks — the image stack and the services stack — become modules, with
+one thin root per environment per component
+(`environments/{prod,dev}/<component>/`): backend and identity hardcoded in the
+root, environment-shaped defaults deleted from the modules. The directory is the
+environment, matching Backend-Server's layout. The two components keep separate
+states per environment — the image stack is CI-applied on every deploy, and
+sharing a state would put the service Lambdas in that blast radius. Prod roots
+reuse the live state keys with `moved` blocks, so the refactor plans clean.
+Ephemeral generates a per-PR root.
 
 In Backend-Server the AI-plane resources become a module instantiated for dev and
 prod, with existing prod resources relocated by `moved` blocks. The Restate server
@@ -268,8 +273,13 @@ stateDiagram-v2
   still be an active version of prod's image.
 - **A third set of roles, keys and log groups for ephemeral.** Copies of dev's,
   validated by nothing else.
-- **Duplicated per-environment Terraform roots, or workspaces.** Drift, and implicit
-  workspace-keyed lookups.
+- **Fully duplicated per-environment Terraform roots, or workspaces.** Drift, and
+  implicit workspace-keyed lookups. Thin per-env roots over shared modules keep
+  the no-drift property without either.
+- **One env-agnostic root per component, env chosen by `-backend-config` +
+  `-var-file` flags.** Built first, reworked in review: the flag pairing is a
+  footgun (dev vars against prod state) and the layout matches nothing else in
+  the org.
 - **Doing nothing.** Dev turns keep burning prod sandbox capacity and prod inference
   budget, and a bad agent build reaches users.
 
@@ -358,7 +368,7 @@ Two phases in order. Phase 1 stands alone. Each row is one child ticket.
 | # | Repo | What lands | Gate | Needs |
 |---|---|---|---|---|
 | 1 | Solstice-AI | Both container builds as PR checks, build-only | A broken build fails the PR | — |
-| 2 | Solstice-AI | Environment-agnostic stacks: per-environment variable files and backend configs, environment-shaped defaults deleted | Prod plans clean | — |
+| 2 | Solstice-AI | Component modules + one thin root per environment; prod roots keep the live state keys with `moved` blocks | Prod plans clean | — |
 | 3 | Backend-Server | AI-plane resources extracted into a module with `moved` blocks | Plans clean | — |
 | 4 | Backend-Server | Per-environment roles; POC-named roles retired; dead Anthropic grants, the vestigial task-role grant and both hardcoded ARNs deleted | Old roles deleted only after a live turn passes on the new ones | 3 |
 | 5 | Backend-Server | Dev substrate: `restate-dev`, own snapshot bucket, dev log groups, dev key parameter, dev deploy role, dev service added to the ECR policy, bastion on dev's ingress **and** admin listeners | `restate-dev` healthy; UI and ingress both reachable through the bastion | 3, 4 |
@@ -476,6 +486,7 @@ alerted on.
 | 2026-08-17 | Every role gets a per-environment version; POC names retired | `-dev` siblings beside unsuffixed prod names | Each has a grant that should differ per environment | @gifan | Decided |
 | 2026-08-17 | Same AWS account, separated by name | Separate accounts | Larger programme; revisit when the plane holds tenant data at rest | @gifan | Decided |
 | 2026-08-17 | The automated smoke gate moves to its own ticket | Build it here | Its own design questions; an unbuilt gate would block every environment under it | @gifan | Decided |
+| 2026-08-18 | Terraform layout: component modules + thin per-environment roots | One env-agnostic root per component with tfvars/backend flag pairs | The directory is the environment — no flag-pairing footgun, and it matches Backend-Server | @gifan | Decided |
 
 ## Sign-off
 
