@@ -156,9 +156,10 @@ Ephemeral generates a per-PR root.
 
 In Backend-Server the AI-plane resources become a module instantiated per
 environment, existing prod resources relocated by `moved` blocks. The module wraps
-the Restate server too, so one instantiation is one whole environment plane;
-account singletons (artifact buckets, ECR, the OIDC provider) stay in the calling
-root, and the shared ingress parameter stays with the caller until its split.
+the Restate server and the environment's artifact bucket too, so one
+instantiation is one whole environment plane; account singletons (ECR, the OIDC
+provider) stay in the calling root, and the shared ingress parameter stays with
+the caller until its split.
 
 ### 3.5 CI
 
