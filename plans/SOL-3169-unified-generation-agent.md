@@ -4,9 +4,9 @@
 |---|---|
 | **Ticket** | [SOL-3169](https://linear.app/solsticehealth/issue/SOL-3169/unified-email-generation-in-the-edit-agent) |
 | **Author** | @gourob |
-| **Reviewers** | 2, one owning the Solstice-AI / agent-platform domain |
+| **Reviewers** | Ari |
 | **Tier** | 2 |
-| **Status** | Draft |
+| **Status** | Approved |
 | **Date** | 2026-08-18 |
 
 > [!IMPORTANT]
@@ -205,8 +205,7 @@ Running alongside the plan, not part of it; results land in the decision log.
 
 | Reviewer | Verdict | Date | Note |
 |---|---|---|---|
-| @ | Approve / Blocked | | |
-| @ | Approve / Blocked | | |
+| @Ari | Approve| | |
 
 ## Reviewer guide
 
