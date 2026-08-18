@@ -80,7 +80,7 @@ Two mechanics constrain every option below:
 | OIDC deploy role | `solstice-ai-gha-deploy-prod` | `-dev` | `-eph` |
 | GitHub Environment | `prod` | `dev` | `ephemeral` |
 | OpenRouter key | `/solstice/solstice-ai-prod/OPENROUTER_API_KEY` | `/solstice/solstice-ai-dev/...` | dev's |
-| Terraform state prefix | unchanged | `solstice-ai/dev/` | `solstice-ai/dev/eph/prN/` |
+| Terraform state | `solstice-ai/` in the **prod** state bucket | `solstice-ai/dev/` in nonprod | `solstice-ai/dev/eph/prN/` in nonprod |
 
 The two POC-named roles are renamed in the same change. Both repos already read
 role names from variables, so per-environment variable files carry it; two
@@ -145,8 +145,10 @@ one thin root per environment per component
 root, environment-shaped defaults deleted from the modules. The directory is the
 environment, matching Backend-Server's layout. The two components keep separate
 states per environment — the image stack is CI-applied on every deploy, and
-sharing a state would put the service Lambdas in that blast radius. Prod roots
-reuse the live state keys with `moved` blocks, so the refactor plans clean.
+sharing a state would put the service Lambdas in that blast radius. Prod state
+moves to the prod tfstate bucket (it lived in nonprod); the deploy role's grants
+widen to the bucket pair first, then the state migrates, then the backend change
+merges. Prod roots carry `moved` blocks, so post-migration plans are clean.
 Ephemeral generates a per-PR root.
 
 In Backend-Server the AI-plane resources become a module instantiated for dev and
@@ -342,8 +344,6 @@ appear in dev first, plus weekly ephemeral spend.
   nothing. Confirm that matches intent.
 - Dev Restate sizing: small instance and daily snapshots, or prod-identical?
   Recommend the former.
-- The non-prod state bucket currently holds the AI plane's prod state. Rename,
-  split, or document?
 
 ---
 
@@ -487,6 +487,7 @@ alerted on.
 | 2026-08-17 | Same AWS account, separated by name | Separate accounts | Larger programme; revisit when the plane holds tenant data at rest | @gifan | Decided |
 | 2026-08-17 | The automated smoke gate moves to its own ticket | Build it here | Its own design questions; an unbuilt gate would block every environment under it | @gifan | Decided |
 | 2026-08-18 | Terraform layout: component modules + thin per-environment roots | One env-agnostic root per component with tfvars/backend flag pairs | The directory is the environment — no flag-pairing footgun, and it matches Backend-Server | @gifan | Decided |
+| 2026-08-18 | Prod state moves to the prod tfstate bucket | Leave it in nonprod and document | Was an open question; migrating during the layout change costs one extra runbook step and ends the mismatch | @gifan | Decided |
 
 ## Sign-off
 
