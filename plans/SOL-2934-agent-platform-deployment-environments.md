@@ -368,11 +368,11 @@ Two phases in order. Phase 1 stands alone. Each row is one child ticket.
 | # | Repo | What lands | Gate | Needs |
 |---|---|---|---|---|
 | 1 | Solstice-AI | Both container builds as PR checks, build-only | A broken build fails the PR | — |
-| 2 | Solstice-AI | Component modules + one thin root per environment; prod roots keep the live state keys with `moved` blocks | Prod plans clean | — |
+| 2 | Solstice-AI | Component modules + thin prod roots (`moved` blocks; prod state migrates to the prod bucket). Dev roots deliberately deferred — they cannot plan yet | Prod plans clean | — |
 | 3 | Backend-Server | AI-plane resources extracted into a module with `moved` blocks | Plans clean | — |
 | 4 | Backend-Server | Per-environment roles; POC-named roles retired; dead Anthropic grants, the vestigial task-role grant and both hardcoded ARNs deleted | Old roles deleted only after a live turn passes on the new ones | 3 |
 | 5 | Backend-Server | Dev substrate: `restate-dev`, own snapshot bucket, dev log groups, dev key parameter, dev deploy role, dev service added to the ECR policy, bastion on dev's ingress **and** admin listeners | `restate-dev` healthy; UI and ingress both reachable through the bastion | 3, 4 |
-| 6 | Solstice-AI | Dev and prod CI: GitHub Environments, `environment:` OIDC trust, reusable image deploy, parameterized service deploy, dev bootstrapped by dispatch | A merge to `dev` serves a dev sandbox; prod untouched | 2, 5 |
+| 6 | Solstice-AI | The dev terraform roots, plus dev and prod CI: GitHub Environments, `environment:` OIDC trust, reusable image deploy, parameterized service deploy, dev bootstrapped by dispatch | A merge to `dev` serves a dev sandbox; prod untouched | 2, 5 |
 | 7 | Backend-Server | The ingress-parameter split, four steps | Each environment resolves its own ingress | 5 |
 | 8 | both | Prod's ingress stops admitting dev's security group; README, dev runbook, and Backend-Server's stale CI/CD doc corrected | Prod ingress admits prod tasks only, admin still admits the bastion | 6, 7 |
 
