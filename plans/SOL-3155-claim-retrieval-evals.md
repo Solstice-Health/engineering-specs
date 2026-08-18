@@ -110,7 +110,7 @@ Each test answers one question. A fail at an earlier drop does not imply a fail 
 | ID | Step | Question | Metric | Gate |
 |---|---|---|---|---|
 | T1 | Domain | Is the single `detect_domains` label correct for this brief + Q&A? | LLM-judge agreement with R2 `expected_domain` | Judged. Paired baseline required. R2 string-match is a smoke check, not the score |
-| T2 | Queries | Do the 2–5 queries, as a set, name the required drug / trial / endpoint? Do three wordings of the same intent still cover them? | Drug name in every query (hard fail). Other facets in at least one query. Paraphrase facet-union judged | Drug-name miss deterministic. Facet coverage judged; paired baseline |
+| T2 | Queries | Do the 2–5 queries, as a set, name the required drug / trial / endpoint? Do three wordings of the same intent still cover them? | Drug name in every query. Other facets in at least one query. Paraphrase facet-union judged | Drug-name miss deterministic. Facet coverage judged; paired baseline |
 | T3 | Retrieve | Of the required groups, how many are on the shortlist? | recall = (shortlist ∩ required) / required | Deterministic given R2 + R3. Withheld if T7 fails |
 | T4 | Choose | Of chosen groups, how many were required? How many required groups were skipped? | precision = (chosen ∩ required) / chosen; miss = required − chosen. Empty chosen and non-empty required → fail | Deterministic. Withheld if T7 fails |
 | T5 | Use | Of claims in the **chosen** groups, how many appear in the HTML? | (html claim ids ∩ hydrated claim ids in chosen groups) / hydrated claim ids in chosen groups. Empty markers → 0, never 1.0 | Deterministic. Parse HTML only. Withheld if T7 fails |
