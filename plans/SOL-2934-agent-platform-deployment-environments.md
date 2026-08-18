@@ -48,7 +48,8 @@ flowchart LR
 | GitHub OIDC deploy role | one, trusted on the `main` branch | **yes** |
 | OpenRouter API key | one prod-named SSM parameter | **yes** |
 | Terraform state keys | two, no environment in the path | **yes** |
-| Artifact bucket, ECR repository, managed network connectors | shared, no environment-specific grants | no |
+| Artifact bucket | one, holds every environment's image zips | **yes** |
+| ECR repository, managed network connectors | shared; immutable digest-pinned images, no environment-specific grants | no |
 
 Deploys today: a push to `main` rebuilds the agent image and registers the
 lifecycle service against `restate-prod`. `dev` is the default branch but unused —
@@ -80,6 +81,7 @@ Two mechanics constrain every option below:
 | OIDC deploy role | `solstice-ai-gha-deploy-prod` | `-dev` | `-eph` |
 | GitHub Environment | `prod` | `dev` | `ephemeral` |
 | OpenRouter key | `/solstice/solstice-ai-prod/OPENROUTER_API_KEY` | `/solstice/solstice-ai-dev/...` | dev's |
+| Artifact bucket | `solstice-ai-agent-image` (existing) | `solstice-ai-agent-image-dev` | dev's |
 | Terraform state | `solstice-ai/` in the **prod** state bucket | `solstice-ai/dev/` in nonprod | `solstice-ai/dev/eph/prN/` in nonprod |
 
 The two POC-named roles are renamed in the same change. Both repos already read
@@ -102,12 +104,13 @@ It does not borrow two things: its own OIDC deploy role, because a PR's workflow
 must not hold dev's deploy identity; and shared short-retention log groups, so PR
 output stays out of dev's.
 
-Five of dev's grants widen from fixed values to `*-eph-*` patterns. None matches a
-fixed dev or prod name.
+Four of dev's grants widen from fixed values to `*-eph-*` patterns; none matches a
+fixed dev or prod name. (A fifth — the build role's artifact read — became
+unnecessary when the artifact bucket split per environment: ephemeral zips live in
+dev's bucket, which dev's build role already reads.)
 
 | Grant | Widens to |
 |---|---|
-| dev build role, artifact read | ephemeral image artifact prefixes |
 | dev build + execution roles, trust condition | `microvm-image:html-edit-agent-eph-*` |
 | dev service execution role, log writes | `/aws/lambda/html-edit-session-eph-*` |
 | `restate-dev` instance profile, `lambda:InvokeFunction` | `html-edit-session-eph-*` |
@@ -151,10 +154,11 @@ widen to the bucket pair first, then the state migrates, then the backend change
 merges. Prod roots carry `moved` blocks, so post-migration plans are clean.
 Ephemeral generates a per-PR root.
 
-In Backend-Server the AI-plane resources become a module instantiated for dev and
-prod, with existing prod resources relocated by `moved` blocks. The Restate server
-module already takes a name, cluster and subnet, so dev is a second instantiation
-plus its own snapshot bucket.
+In Backend-Server the AI-plane resources become a module instantiated per
+environment, existing prod resources relocated by `moved` blocks. The module wraps
+the Restate server too, so one instantiation is one whole environment plane;
+account singletons (artifact buckets, ECR, the OIDC provider) stay in the calling
+root, and the shared ingress parameter stays with the caller until its split.
 
 ### 3.5 CI
 
@@ -371,7 +375,7 @@ Two phases in order. Phase 1 stands alone. Each row is one child ticket.
 | 2 | Solstice-AI | Component modules + thin prod roots (`moved` blocks; prod state migrates to the prod bucket). Dev roots deliberately deferred — they cannot plan yet | Prod plans clean | — |
 | 3 | Backend-Server | AI-plane resources extracted into a module with `moved` blocks | Plans clean | — |
 | 4 | Backend-Server | Per-environment roles; POC-named roles retired; dead Anthropic grants, the vestigial task-role grant and both hardcoded ARNs deleted | Old roles deleted only after a live turn passes on the new ones | 3 |
-| 5 | Backend-Server | Dev substrate: `restate-dev`, own snapshot bucket, dev log groups, dev key parameter, dev deploy role, dev service added to the ECR policy, bastion on dev's ingress **and** admin listeners | `restate-dev` healthy; UI and ingress both reachable through the bastion | 3, 4 |
+| 5 | Backend-Server | Dev substrate — a second `ai-plane` instantiation: `restate-dev`, own snapshot bucket, dev artifact bucket, dev log groups, dev key parameter, dev deploy role, dev service added to the ECR policy, bastion on dev's ingress **and** admin listeners | `restate-dev` healthy; UI and ingress both reachable through the bastion | 3, 4 |
 | 6 | Solstice-AI | The dev terraform roots, plus dev and prod CI: GitHub Environments, `environment:` OIDC trust, reusable image deploy, parameterized service deploy, dev bootstrapped by dispatch | A merge to `dev` serves a dev sandbox; prod untouched | 2, 5 |
 | 7 | Backend-Server | The ingress-parameter split, four steps | Each environment resolves its own ingress | 5 |
 | 8 | both | Prod's ingress stops admitting dev's security group; README, dev runbook, and Backend-Server's stale CI/CD doc corrected | Prod ingress admits prod tasks only, admin still admits the bastion | 6, 7 |
@@ -382,7 +386,7 @@ Critical path 3 → 4 → 5 → 6; PRs 1, 2 and 7 sit off it. **PR 6 demos.** ~5
 
 | # | Repo | What lands | Gate | Needs |
 |---|---|---|---|---|
-| 9 | both | Enablers: configurable service name with validation; a deregistration document; the five `*-eph-*` widenings; shared ephemeral log groups; the `ephemeral` Environment and role; S3 and ECR lifecycle rules | Wildcards match no fixed name; dev keeps serving | 5 |
+| 9 | both | Enablers: configurable service name with validation; a deregistration document; the four `*-eph-*` widenings; shared ephemeral log groups; the `ephemeral` Environment and role; S3 and ECR lifecycle rules | Wildcards match no fixed name; dev keeps serving | 5 |
 | 10 | Solstice-AI | The loop: PR checks gain push; per-PR image, Lambda and registration; teardown on PR close; nightly sweeper | A PR gets an environment; closing it leaves nothing | 1, 6, 9 |
 | 11 | Solstice-AI | Ephemeral runbook | — | 10 |
 
@@ -416,7 +420,7 @@ the dead shared MicroVM-execution-role parameter in the same PR, the same way.
   build role's trust names its own images, each service role passes only its own
   environment's execution role.
 - The ephemeral wildcards are the review surface, and because ephemeral borrows
-  dev's roles they land on dev's grants. All five require the `-eph-` infix.
+  dev's roles they land on dev's grants. All four require the `-eph-` infix.
 - Registration and deregistration are fixed SSM documents with one
   regex-constrained input each, so CI can perform those two operations and not run
   commands. Confirm the deregistration document cannot target dev's own deployment.
@@ -487,6 +491,8 @@ alerted on.
 | 2026-08-17 | Same AWS account, separated by name | Separate accounts | Larger programme; revisit when the plane holds tenant data at rest | @gifan | Decided |
 | 2026-08-17 | The automated smoke gate moves to its own ticket | Build it here | Its own design questions; an unbuilt gate would block every environment under it | @gifan | Decided |
 | 2026-08-18 | Terraform layout: component modules + thin per-environment roots | One env-agnostic root per component with tfvars/backend flag pairs | The directory is the environment — no flag-pairing footgun, and it matches Backend-Server | @gifan | Decided |
+| 2026-08-18 | The Restate server lives inside the ai-plane module | Sibling modules composed by the root | One instantiation is one whole environment plane; accepted the pass-through inputs | @gifan | Decided |
+| 2026-08-18 | The artifact bucket splits per environment (prod keeps the existing bucket; dev + ephemeral share a dev bucket) | One shared bucket with prefix-scoped grants | Same reasoning as the state bucket; kills the ephemeral artifact-prefix widening, and no data migrates — the artifact re-uploads every deploy | @gifan | Decided |
 | 2026-08-18 | Prod state moves to the prod tfstate bucket | Leave it in nonprod and document | Was an open question; migrating during the layout change costs one extra runbook step and ends the mismatch | @gifan | Decided |
 
 ## Sign-off
