@@ -366,5 +366,5 @@ Observe-only. Run record is fail-open. R3 snapshot may contain client claim text
 
 | Reviewer | Verdict | Date | Note |
 |---|---|---|---|
-| @arindam-sharma | | | |
-| @montechand | | | |
+| @arindam-sharma | Approved | Aug 19 | |
+| @montechand | Approved | Aug 19 | |
