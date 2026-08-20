@@ -74,9 +74,9 @@ A **cursor** is an opaque string the client stores and echoes back. It is a Redi
 **`POST …/{operation_id}/messages`**
 - *Auth* — the same bearer token as every other v2 route, with brand access enforced on the path param.
 - *Body* — the prompt, a client-generated message id, and today's optional extras: attachments, selection, target banner, intelligence mode.
-- *Returns* — `202 {turn_id, cursor}` as soon as the row is written. Never a stream.
+- *Returns* — `202 {cursor}` as soon as the row is written, plus `turn_id` when this call starts a turn. Never a stream. A queued message gets its `turn_id` on the later dispatch, delivered on the event stream.
 - *Errors* — idempotent on the client message id, so a double-click writes one message.
-- Behaviour when a turn is already running is the first open question.
+- A message arriving while a turn is in flight is written and published; it does not start a turn. The write that accepts the running turn's terminal — agent push or watchdog — starts the earliest unstarted message, if one exists.
 
 **`GET …/{operation_id}/events`**
 - *Auth* — same bearer token. Read with `fetch` and a streaming response rather than `EventSource`, which cannot set headers; the frontend already does this.
@@ -103,13 +103,17 @@ sequenceDiagram
     C->>BE: GET …/events — one SSE per viewer
     C->>BE: POST …/messages
     BE->>BE: append the message, publish it
-    BE->>RS: dispatch (one-way)
+    opt no turn in flight
+        BE->>RS: dispatch (one-way)
+    end
     BE-->>C: 202 — the request ends here
     RS->>S: ensure sandbox
     opt new sandbox
         RS->>BE: fetch context (scoped token)
         RS->>S: push it
     end
+    Note over RS,BE,S: fetch input and POST /turn are one journaled step
+    RS->>BE: fetch this turn's input (scoped token)
     RS->>S: POST /turn
     S-->>RS: 202 — runs detached
     loop while the turn runs
@@ -117,6 +121,9 @@ sequenceDiagram
         BE-->>C: fan out to every subscriber
     end
     Note over BE: durable events → messages table<br/>every event → Redis stream
+    opt an unstarted message remains
+        BE->>RS: dispatch next (one-way)
+    end
 ```
 
 What changes:
@@ -131,13 +138,15 @@ What changes:
 
 **Context is pushed once, when the sandbox is new.** Today the backend re-pushes the current document on every turn against an existing sandbox, in case it drifted. Nothing makes it drift: the agent is the only writer, accept stores the proposal unchanged, and a reject that cannot be reverted terminates the sandbox — so the next turn is a fresh one and hydrates anyway. The one other case is a runner process restarting inside a live VM, which reports itself uninitialised, so it is detected rather than guessed at.
 
+**This turn's user input is delivered every time, in the same journaled step as `POST /turn`.** The new prompt, extras and attachments are not in the workspace, and Restate must not journal them. Restate fetches that payload with its scoped read token and POSTs it to `/turn` inside one step — the same pattern hydration uses for the bundle. A warm sandbox therefore still receives this turn's input; it just does not re-fetch the document. The agent's public credential stays write-only.
+
 **Nothing changes shape in the database.** No new table, no new column, no migration: `n_cg_operation_messages` already stores everything worth keeping, so this adds a way to deliver those rows rather than a second copy. Transients stay unpersisted, and `_v2_edit` keeps `status` and `pending_html`. The cursor therefore lives in Redis — inside the retention window a client resumes incrementally, outside it reloads history as page load already does, and a trimmed cursor is detectable so it knows which it needs.
 
 **Restate takes the whole sandbox lifecycle.** Today it only launches one; the backend still decides when to relaunch, re-hydrate or recycle, and holds a live token to dispatch with. Dispatch, the watchdog, reject convergence and warmup all move there, and the backend never sees a sandbox again. It still carries only ids, and no handler outlives a turn — these run on Lambda, so dispatch returns in seconds and a delayed self-send checks later.
 
-**The lease goes, with nothing in its place.** One turn at a time is already enforced by the agent's own in-flight guard, next to the workspace at risk. "Queued" becomes a read rather than a record: a message with no turn started after it. A second person's message mid-turn is ordinary data, visible to every viewer, picked up when the running turn ends.
+**The lease goes, with nothing in its place.** One turn at a time is already enforced by the agent's own in-flight guard, next to the workspace at risk. "Queued" is a read, not a record: a message with no turn started after it. A second message mid-turn is ordinary data, visible to every viewer. `POST …/messages` dispatches only when no turn is in flight. Virtual Object serialization covers that short handler, not the detached turn, so a second `dispatch_turn` during an in-flight turn would be refused at the sandbox and then stranded. The worker is the write that closes the turn: accepting a terminal event — from the agent or synthesized by the watchdog — one-way-dispatches the earliest unstarted message, if one exists. Nothing awaits the turn.
 
-**A lot of code goes with it.** `TurnRelay` and its retry ladder, all recovery polling, the frontend's `423` handling that production cannot produce, `runner_client` and `restate_client` in their entirety, and the event mapping layer. The per-turn document sync goes too; attachment pushing folds into hydration.
+**A lot of code goes with it.** `TurnRelay` and its retry ladder, all recovery polling, the frontend's `423` handling that production cannot produce, `runner_client` and `restate_client` in their entirety, and the event mapping layer. The per-turn document sync goes too. This turn's attachments travel with its prompt on `POST /turn`; only historical files stay in hydration.
 
 ## 3. Trade-offs accepted
 
@@ -160,7 +169,7 @@ What changes:
 
 - **The agent cannot reach the callback route.** Confirmed viable: sandboxes launch with an `INTERNET_EGRESS` connector and already call OpenRouter through it. If that regresses, the fallback is a Backend-Server background consumer reading the runner's NDJSON — instance affinity returns for the consumer, but not for the viewer.
 - **Workspace drift is assumed away, not checked.** If anything but the agent ever writes the document, the agent edits a stale copy and the user sees a plausible but wrong result. The known trigger is partial accept, which is disabled today (`PARTIAL_ACCEPT_ENABLED = false`) and would store a baseline/proposal merge if enabled. A reviewer who knows another writer should say so — this replaces an unconditionally correct per-turn push.
-- **Restate now calls Backend-Server.** A new direction, and it needs the service's Lambda to reach the API — VPC-attached for an internal call, or via the public ALB otherwise. Confirm which before PR 3 ships. The bundle must be fetched and pushed inside one journaled step; two steps would record client content in the journal, breaking the property the self-hosting decision rests on.
+- **Restate now calls Backend-Server.** A new direction, and it needs the service's Lambda to reach the API — VPC-attached for an internal call, or via the public ALB otherwise. Confirm which before PR 3 ships. The bundle must be fetched and pushed inside one journaled step, and this turn's input must be fetched and POSTed to `/turn` inside one journaled step; two steps would record client content in the journal, breaking the property the self-hosting decision rests on.
 - **Making `/turn` async changes the agent's contract,** and there is no dev deployment of agent-pi to rehearse on. That is the main delivery risk, and why PR 1 lands additively and early. The likeliest half-failure: everything else ships, the agent push never starts, and the new subscription path runs beside the old relay indefinitely — two code paths instead of one.
 - **SSE connection count** rises from one per active turn to one per viewer. Affordable on the current four async workers, but anything blocking an event loop stalls every stream on that worker, so the existing discipline of pushing DB work off the loop becomes load-bearing.
 - **Tenancy and PHI.** The one new data path is chat content through Redis — tenant-scoped by logical database, capped, and disposable because Postgres is the record. Credentials and the authorship rule are in Security and compliance below.
@@ -174,7 +183,8 @@ What changes:
 - A deploy during an in-flight turn does not lose the turn.
 - A turn whose agent is killed without emitting a terminal event is closed by the watchdog rather than hanging.
 - Reject converges against a live sandbox, and is verifiably serialized against a following turn.
-- A turn following an accept does no context fetch or push, and starts from the document the previous turn produced.
+- A turn following an accept does no workspace fetch or push, and starts from the document the previous turn produced. It does fetch this turn's prompt and attachments.
+- A message sent while a turn is running is visible immediately and starts when that turn terminals, with no further human action.
 - A turn against a sandbox whose runner restarted is detected as uninitialised and re-hydrated.
 - An inspected journal for a full turn contains no message text and no HTML.
 - A duplicated push from the agent is rejected on a `(turn_id, turn_seq)` dedup key rather than double-written.
@@ -183,7 +193,6 @@ What changes:
 
 ## 7. Open questions
 
-- A second message arriving mid-turn: queue, merge into the running turn, or refuse? Queue is the recommendation and what the log gives for free. Merging needs the agent to accept mid-turn input. This is the one open item that changes the design.
 - Does the callback route sit under `/api/v2` or beside it? The v2 manifest claims to be the single source of truth for what sits there behind Auth0, and this is a different audience with a different credential.
 - Should accept and reject emit events? Probably yes, or a second viewer never learns the proposal was resolved.
 
@@ -199,8 +208,8 @@ Three repositories deploy independently, so a PR cannot span them, setting the f
 
 | PR | Repo | What it does |
 |---|---|---|
-| 1 | Solstice-AI | `/turn` gains an optional callback — given one it returns `202` and posts batched events, without one it streams NDJSON as today. Restate gains `dispatch_turn`, the watchdog, hydration, reject convergence and warmup. All of it dormant until Backend-Server calls it. |
-| 2 | Backend-Server | The Redis publisher, `GET …/events`, `POST …/messages`, scoped paths for `accept`/`reject`/`interrupt`/`warmup` with the old ones kept as aliases, and the agent-callback route with its token minting. `POST …/messages` dispatches through Restate from the start; today's `/stream` keeps using the relay and additionally publishes each frame it relays. |
+| 1 | Solstice-AI | `/turn` gains an optional callback — given one it returns `202` and posts batched events, without one it streams NDJSON as today. Restate gains `dispatch_turn` (fetch this turn's input and POST `/turn` in one journaled step), the watchdog, hydration, reject convergence and warmup. A watchdog-synthesised terminal is written through the same ingest as an agent terminal. All of it dormant until Backend-Server calls it. |
+| 2 | Backend-Server | The Redis publisher, `GET …/events`, `POST …/messages`, scoped paths for `accept`/`reject`/`interrupt`/`warmup` with the old ones kept as aliases, and the agent-callback route with its token minting. `POST …/messages` dispatches through Restate only when no turn is in flight. Accepting a terminal — agent or watchdog — one-way-dispatches the earliest unstarted message. Today's `/stream` keeps using the relay and additionally publishes each frame it relays. |
 | 3 | Solstice-Frontend | Subscribe on mount and render from the log, send over `POST …/messages`, and delete the polling, the lease and the `423` handling. |
 | 4–6 | One each | Delete `TurnRelay`, `runner_client`, `restate_client`, `/stream`, the aliases, the event mapping layer, and NDJSON support in `/turn`. |
 
@@ -218,7 +227,7 @@ No feature flags: the switch is which endpoint the frontend calls, so old and ne
 
 ## Security and compliance
 
-- **New credentials, both narrow.** The agent's is short-lived, scoped to `{tenant, operation_id, turn_id}`, and **write-only**. `role` and `author` derive from it and are rejected if supplied in a body — the security-critical rule, since without it anything reaching the route could post as the agent or as another user. Restate's is a read token for one operation, never exposed to the internet.
+- **New credentials, both narrow.** The agent's is short-lived, scoped to `{tenant, operation_id, turn_id}`, and **write-only**. `role` and `author` derive from it and are rejected if supplied in a body — the security-critical rule, since without it anything reaching the route could post as the agent or as another user. Restate's is a read token for one operation — the launch bundle and each turn's input — never exposed to the internet.
 - **New public surface.** The callback route is reachable from the internet because sandbox egress is internet-only. It is mounted outside the Auth0 dependency with its own token dependency, and should be rate-limited per operation.
 - **Redis.** Holds chat content in a capped, expiring stream on the existing in-VPC instance, tenant-separated by the existing per-tenant logical database. Not a new processor, not a new store of record — Postgres remains the only durable copy.
 - **Restate.** Continues to carry no tenant data — ids only — so SOL-2878's hosting and rollback position is unchanged.
@@ -230,9 +239,11 @@ No feature flags: the switch is which endpoint the frontend calls, so old and ne
 
 | Date | Decision | Options considered | Why | Who | Status |
 |---|---|---|---|---|---|
-| 2026-08-19 | Turn dispatch goes through Restate, but no handler awaits the turn | Awakeable + suspended handler vs. short dispatch + delayed watchdog | There is no post-turn work to wake up for; the awakeable existed only to release a lock, and it made a successful turn dependent on a callback into Restate | gifan | Decided |
-| 2026-08-19 | The lease is deleted with no replacement | Fleet-wide lock, Restate-held key, no lock | agent-pi already refuses concurrent turns next to the workspace at risk; queueing is derivable from the log | gifan | Decided |
-| 2026-08-20 | Hydrate only a new sandbox; no per-turn sync and no staleness marker | Re-push every turn, mark-and-check, hydrate on launch only | The agent is the only writer, so nothing diverges the workspace; a failed reject terminates the sandbox and the next turn hydrates anyway | gifan | Decided |
+| 2026-08-19 | Turn dispatch goes through Restate, but no handler awaits the turn | Awakeable + suspended handler vs. short dispatch + delayed watchdog | A successful turn must not depend on a callback into Restate, and handlers run on Lambda so they cannot wait. Starting a queued message is post-turn work, but the hook is the terminal write, not a suspended handler | gifan | Decided |
+| 2026-08-19 | The lease is deleted with no replacement | Fleet-wide lock, Restate-held key, no lock | agent-pi already refuses concurrent turns next to the workspace at risk; queueing is derivable from the log; the terminal ingest is the worker that starts the next one | gifan | Decided |
+| 2026-08-20 | Hydrate only a new sandbox; no per-turn document sync and no staleness marker | Re-push every turn, mark-and-check, hydrate on launch only | The agent is the only writer, so nothing diverges the workspace; a failed reject terminates the sandbox and the next turn hydrates anyway | gifan | Decided |
+| 2026-08-20 | Every turn fetches this turn's input and POSTs `/turn` in one journaled step | Put the prompt in the journal, have the agent pull, or deliver input only at hydration | Workspace hydration is once; the new prompt and files are not in the workspace. A separate fetch step would journal the payload. Agent-pull widens the public credential. One journaled step keeps Restate ids-only and the agent's token write-only | gifan | Decided |
+| 2026-08-20 | A mid-turn message queues; the terminal ingest starts it | Queue, merge into the running turn, or refuse | The log can show the queued row but cannot start it. VO serialization covers only the short handler, so a dispatch during an in-flight turn is refused at the sandbox and then stranded. Accepting the terminal — agent or watchdog — one-way-dispatches the earliest unstarted message | gifan | Decided |
 | 2026-08-19 | Restate fetches the context and pushes it; the agent stays unchanged | BE pushes at launch, Restate fetches and pushes, agent pulls per turn | Smallest agent change, keeps the agent's public credential write-only, and matches the direction SOL-2878 recorded; content stays out of the journal by fetching and pushing in one step | gifan | Decided |
 | 2026-08-19 | Reuse the existing Redis rather than a dedicated instance | Dedicated instance, shared instance with bounded usage | A capped, expiring stream per operation is a few percent of a 3 GB cap; tenant separation by logical database already exists | gifan | Decided |
 | 2026-08-19 | No new table and no new column; the cursor lives in Redis | New event table, a `seq` column on `n_cg_operation_messages`, or a Redis-only cursor | The message table is already the durable log; a second copy buys only exact resume after a long absence, which a history reload covers | gifan | Decided |
@@ -257,4 +268,4 @@ No feature flags: the switch is which endpoint the frontend calls, so old and ne
 3. Check the problem list in section 1 against your own knowledge of the code.
 4. Comment within 24 hours.
 5. Block only for correctness, security, or cost.
-6. Answer the first open question if you have a view — it is the only one that changes the design.
+6. Answer the remaining open questions if you have a view.
