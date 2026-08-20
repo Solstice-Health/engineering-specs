@@ -397,17 +397,24 @@ the execution-role ARN moves → redeploy the service so its published version c
 it → let in-flight sandboxes drain, bounded by the sandbox TTL → delete the old
 roles. Deleting early is silent until a live sandbox fetches its key.
 
-**PR 7, the ingress-parameter split.**
+**PR 7, the ingress-parameter split.** Terraform never propagates secrets to a
+live task definition (`ignore_changes` on container definitions; deploys copy the
+live revision and swap only the image), so the terraform change governs future
+creates and the live cutover is task-definition surgery — the same
+describe → edit → register mechanism the deploy pipeline uses.
 
-1. Exclude the ingress URL from the shared-prefix secret enumeration in dev, prod
-   and staging; apply each; confirm it leaves the task definitions.
-2. Write per-environment ingress parameters from the owning stacks.
-3. Delete the shared parameter.
-4. Drop the exclusions, apply, force one deployment per environment, confirm each
-   resolves its own ingress.
+1. Land the terraform: per-environment ingress parameters from the owning stack,
+   the shared name excluded from every stack's shared-prefix enumeration
+   (including `staging/platform-testing`), the shared parameter kept transitional.
+2. Apply the owning stack so the per-environment parameters exist.
+3. Per environment and service: register a task-definition revision whose
+   `RESTATE_INGRESS_URL` resolves from the environment prefix (dropped outright in
+   staging and platform-testing — no network path exists), and drop the dead
+   MicroVM-execution-role secret; roll the service; confirm each resolves its own
+   ingress.
+4. Follow-up PR deletes the shared parameter and the dead MicroVM parameter.
 
-Back out after step 3 by recreating the shared parameter and re-excluding. Retire
-the dead shared MicroVM-execution-role parameter in the same PR, the same way.
+Back out before step 4 by re-registering revisions against the shared parameter.
 
 ## Security and compliance
 
