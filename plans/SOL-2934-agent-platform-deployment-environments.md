@@ -383,7 +383,7 @@ Critical path 3 → 4 → 5 → 6; PRs 1, 2 and 7 sit off it. **PR 6 demos.** ~5
 
 | # | Repo | What lands | Gate | Needs |
 |---|---|---|---|---|
-| 9 | both | Enablers: configurable service name with validation; a deregistration document; the four `*-eph-*` widenings; shared ephemeral log groups; the `ephemeral` Environment and role; S3 and ECR lifecycle rules | Wildcards match no fixed name; dev keeps serving | 5 |
+| 9 | both | Enablers: configurable service name with validation; a deregistration document; the four `*-eph-*` widenings; shared ephemeral log groups; the ephemeral deploy role (its trust design lands with the deferred Environments ticket); S3 and ECR lifecycle rules | Wildcards match no fixed name; dev keeps serving | 5 |
 | 10 | Solstice-AI | The loop: PR checks gain push; per-PR image, Lambda and registration; teardown on PR close; nightly sweeper | A PR gets an environment; closing it leaves nothing | 1, 6, 9 |
 | 11 | Solstice-AI | Ephemeral runbook | — | 10 |
 
