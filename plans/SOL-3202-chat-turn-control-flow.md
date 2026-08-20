@@ -86,7 +86,7 @@ A **cursor** is an opaque string the client stores and echoes back. It is a Redi
 
 **`POST /agent-callback/agents/html-edit/{operation_id}/events`**
 - *Auth* — the agent's short-lived token, scoped to one tenant, operation and turn, and write-only. `role` and `author` derive from it; supplying either in the body is an error, never an overwrite.
-- *Body* — a batch of events plus `turn_id` and a per-turn sequence number.
+- *Body* — a batch of events plus a per-turn sequence number. Tenant, operation and turn derive from the token, never the body; the destination URL is the runner's deployment config, never the caller's, so a runner only posts to its own gateway.
 - *Returns* — `200` with the cursor of the last event accepted. A batch is accepted whole or rejected whole.
 - *Errors* — `409` on a replayed sequence number, so a retry after a timeout is free; `422` on an event kind the agent did not declare.
 
