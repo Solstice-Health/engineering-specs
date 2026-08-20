@@ -491,7 +491,7 @@ alerted on.
 | 2026-08-18 | The Restate server lives inside the ai-plane module | Sibling modules composed by the root | One instantiation is one whole environment plane; accepted the pass-through inputs | @gifan | Decided |
 | 2026-08-18 | The artifact bucket splits per environment (prod keeps the existing bucket; dev + ephemeral share a dev bucket) | One shared bucket with prefix-scoped grants | Same reasoning as the state bucket; kills the ephemeral artifact-prefix widening, and no data migrates — the artifact re-uploads every deploy | @gifan | Decided |
 | 2026-08-18 | Prod state moves to the prod tfstate bucket | Leave it in nonprod and document | Was an open question; migrating during the layout change costs one extra runbook step and ends the mismatch | @gifan | Decided |
-| 2026-08-19 | GitHub Environments, `environment:` OIDC subjects, the prod approval gate, tag-based prod releases and the deploy-role rename are deferred to a follow-up ticket | Ship them in PR 6 | Dev CI needs none of them — branch-ref trust already exists — and the prod release process stays unchanged; Phase 2's ephemeral trust design moves with them | @gifan | Decided |
+| 2026-08-19 | GitHub Environments, `environment:` OIDC subjects, the prod approval gate, tag-based prod releases, the deploy-role rename and the deploy-role grant tightenings are deferred to a follow-up ticket | Ship them in PR 6 | Dev CI needs none of them — branch-ref trust already exists — and the prod release process stays unchanged; Phase 2's ephemeral trust design moves with them | @gifan | Decided |
 
 ## Sign-off
 
