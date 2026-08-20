@@ -74,9 +74,9 @@ A **cursor** is an opaque string the client stores and echoes back. It is a Redi
 **`POST …/{operation_id}/messages`**
 - *Auth* — the same bearer token as every other v2 route, with brand access enforced on the path param.
 - *Body* — the prompt, a client-generated message id, and today's optional extras: attachments, selection, target banner, intelligence mode.
-- *Returns* — `202 {cursor}` as soon as the row is written, plus `turn_id` when this call starts a turn. Never a stream.
+- *Returns* — `202 {cursor}` as soon as the row is written. Never a stream. `turn_id` is published on the event stream when `POST /turn` is accepted, not at write time.
 - *Errors* — idempotent on the client message id, so a double-click writes one message.
-- A message arriving while a turn is in flight is written and published; it does not start a turn. The write that accepts the running turn's terminal dispatches the earliest unstarted message, if one exists.
+- A message arriving while a turn is in flight, or while `pending_html` is set, is written and published; it does not start a turn. Dispatch runs only when the operation is idle — no in-flight turn and no unresolved proposal. The writes that reach that state — accept, reject, or a terminal that does not set `pending_html` — start the earliest unstarted message, if one exists.
 
 **`GET …/{operation_id}/events`**
 - *Auth* — same bearer token. Read with `fetch` and a streaming response rather than `EventSource`, which cannot set headers; the frontend already does this.
@@ -92,6 +92,8 @@ A **cursor** is an opaque string the client stores and echoes back. It is a Redi
 
 **`POST …/{operation_id}/warmup`** — not an event route. Fire-and-forget on page load, `202` immediately, so the first message does not pay for a cold launch.
 
+**`POST …/{operation_id}/accept` and `…/reject`** — existing commands, scoped like the new routes. Each writes the resolution and publishes it, so a second viewer learns the proposal was resolved, then dispatches the earliest unstarted message if the operation is now idle. Reject still runs the ladder against the live sandbox before any following turn.
+
 ### Control flow
 
 ```mermaid
@@ -103,21 +105,29 @@ sequenceDiagram
     C->>BE: GET …/events — one SSE per viewer
     C->>BE: POST …/messages
     BE->>BE: append the message, publish it
-    BE-->>C: 202 — the request ends here
-    BE->>RS: wake_up
-    RS->>S: ensure — revive or launch
-    opt new or uninitialised sandbox
-        RS->>BE: fetch context (scoped token)
-        RS->>S: push it
+    BE-->>C: 202 {cursor} — the request ends here
+    opt operation idle — no in-flight turn, no pending_html
+        BE->>RS: wake_up
+        RS->>S: ensure — revive or launch
+        opt new or uninitialised sandbox
+            RS->>BE: fetch context (scoped token)
+            RS->>S: push it
+        end
+        RS-->>BE: turn-ready sandbox
+        BE->>S: POST /turn — callback params
+        S-->>BE: 202 — start recorded, runs detached
     end
-    RS-->>BE: turn-ready sandbox
-    BE->>S: POST /turn — callback params
-    S-->>BE: 202 — runs detached
     loop while the turn runs
         S->>BE: POST …/events — batched
         BE-->>C: fan out to every subscriber
     end
     Note over BE: durable events → messages table<br/>every event → Redis stream
+    alt terminal set pending_html
+        C->>BE: POST accept or reject
+        Note over BE: proposal resolved; then dispatch if a message is unstarted
+    else terminal left no pending_html
+        Note over BE: dispatch the earliest unstarted message, if any
+    end
 ```
 
 What changes:
@@ -136,9 +146,9 @@ What changes:
 
 **Restate owns every lifecycle decision, behind one call.** Today it only launches; the backend still decides when to relaunch, re-hydrate or recycle. `wake_up` replaces all of that: one request-response handler that returns a turn-ready sandbox — running is a state read, suspended is a revive, absent is a launch, and a new or uninitialised runner is hydrated before it returns. A cold start is a couple of seconds, so the caller just waits. The backend keeps one dumb heal — a sandbox proven dead at dispatch is one more `wake_up` with its id — and still dispatches `/turn`, interrupt and the reject ladder itself, so no handler outlives a turn and nothing new lands on the Lambda clock.
 
-**Nothing watches the clock.** A turn that dies without a terminal event is detected lazily, at the moments anyone cares — a new message, a fresh subscription — by asking Restate for the descriptor and the runner whether a turn is in flight. A stale turn is closed with a synthesized error terminal. No timer chain, no watchdog.
+**Nothing watches the clock.** A turn that dies without a terminal event is detected lazily, at the moments anyone cares — a new message, a fresh subscription — by asking Restate for the descriptor and the runner whether a turn is in flight. A stale turn is closed with a synthesized error terminal, which does not set `pending_html`. No timer chain, no watchdog.
 
-**The lease goes, with nothing in its place.** One turn at a time is already enforced by the agent's own in-flight guard, next to the workspace at risk. "Queued" becomes a read rather than a record: a message with no turn started after it. A second person's message mid-turn is ordinary data, visible to every viewer. The write that accepts a terminal — the agent's push or a stale-turn close — dispatches the earliest unstarted message.
+**The lease goes, with nothing in its place.** One turn at a time is already enforced by the agent's own in-flight guard, next to the workspace at risk. "Queued" becomes a read rather than a record: a message with no accepted `/turn` after it. Start is the agent's 202, not the message write — two idle sends may both dispatch; the agent admits one and the loser stays unstarted, so it is still a queue item rather than a stale turn. A message arriving mid-turn, or while `pending_html` is set, is ordinary data, visible to every viewer. Dispatch runs only when the operation is idle: no in-flight turn and no unresolved proposal. An agent proposal is not idle. The writes that reach that state — accept, reject, or a terminal that does not set `pending_html` — start the earliest unstarted message.
 
 **A lot of code goes with it.** `TurnRelay` and its retry ladder, all recovery polling, the frontend's `423` handling that production cannot produce, and the event mapping layer. `runner_client` and `restate_client` shrink to the calls the new path uses — wake, dispatch, interrupt, the reject ladder — instead of owning turn transport. The per-turn document sync goes too.
 
@@ -178,7 +188,9 @@ What changes:
 - A client killed mid-turn and reconnected resumes with no gap and no duplicates — at its cursor inside the retention window, and by reloading history when the cursor has been trimmed out.
 - A deploy during an in-flight turn does not lose the turn, and a message whose dispatch task died is picked up rather than lost.
 - A turn whose agent is killed without emitting a terminal event is closed by stale-turn detection at the next message or subscription rather than hanging.
-- Reject converges against a live sandbox, and is verifiably serialized against a following turn.
+- Reject converges against a live sandbox, and is verifiably serialized against a following turn: a following turn does not start while `pending_html` is set.
+- A message sent while a turn is running, or while a proposal is pending, is visible immediately and starts only after accept, reject, or a terminal that does not set `pending_html`.
+- Two concurrent idle sends produce one accepted `/turn` and one unstarted message; the unstarted one is dispatched when the operation is next idle, not closed as stale.
 - A turn following an accept does no context fetch or push, and starts from the document the previous turn produced.
 - A turn against a sandbox whose runner restarted is detected as uninitialised and re-hydrated.
 - An inspected journal for a full turn contains no message text and no HTML.
@@ -189,7 +201,6 @@ What changes:
 ## 7. Open questions
 
 - Does the callback route sit under `/api/v2` or beside it? The v2 manifest claims to be the single source of truth for what sits there behind Auth0, and this is a different audience with a different credential.
-- Should accept and reject emit events? Probably yes, or a second viewer never learns the proposal was resolved.
 
 ---
 
@@ -204,7 +215,7 @@ Three repositories deploy independently, so a PR cannot span them, setting the f
 | PR | Repo | What it does |
 |---|---|---|
 | 1 | Solstice-AI | `/turn` gains an optional callback — given one it returns `202` and posts batched events, without one it streams NDJSON as today. Restate gains `wake_up`: ensure plus hydration, returning a turn-ready sandbox. All of it dormant until Backend-Server calls it. |
-| 2 | Backend-Server | The Redis publisher, `GET …/events`, `POST …/messages` with its wake-and-dispatch task, the context-bundle route `wake_up` hydrates from, stale-turn closure, scoped paths for `accept`/`reject`/`interrupt`/`warmup` with the old ones kept as aliases, and the agent-callback route with its token minting. `POST …/messages` wakes and dispatches from the start; today's `/stream` keeps using the relay and additionally publishes each frame it relays. |
+| 2 | Backend-Server | The Redis publisher, `GET …/events`, `POST …/messages` with its wake-and-dispatch task, the context-bundle route `wake_up` hydrates from, stale-turn closure, scoped paths for `accept`/`reject`/`interrupt`/`warmup` with the old ones kept as aliases, and the agent-callback route with its token minting. `POST …/messages` wakes and dispatches only when the operation is idle; start is recorded on `/turn` 202. Accept, reject, and a no-proposal terminal dispatch the earliest unstarted message. Today's `/stream` keeps using the relay and additionally publishes each frame it relays. |
 | 3 | Solstice-Frontend | Subscribe on mount and render from the log, send over `POST …/messages`, and delete the polling, the lease and the `423` handling. |
 | 4–6 | One each | Delete `TurnRelay`, `/stream`, the aliases, the event mapping layer, and NDJSON support in `/turn`; `runner_client` and `restate_client` shrink to the calls the new path uses. |
 
@@ -237,8 +248,10 @@ No feature flags: the switch is which endpoint the frontend calls, so old and ne
 | 2026-08-19 | Turn dispatch goes through Restate, but no handler awaits the turn | Awakeable + suspended handler vs. short dispatch + delayed watchdog | There is no post-turn work to wake up for; the awakeable existed only to release a lock, and it made a successful turn dependent on a callback into Restate | gifan | Superseded 2026-08-20 |
 | 2026-08-20 | The backend dispatches `/turn` itself, after a `wake_up` call that returns a turn-ready sandbox | Restate `dispatch_turn` one-way vs. backend dispatch after `wake_up` | `dispatch_turn` needed a turn-input fetch, a failure-reporting channel and a watchdog while the backend kept runner access for interrupt and reject anyway; `wake_up` keeps lifecycle ownership in Restate and deletes that surface | gifan | Decided |
 | 2026-08-20 | No watchdog; hung turns are closed lazily by the backend | Restate delayed-self-send watchdog vs. lazy detection at message send and subscribe | A hung turn's wedge is only observable at an interaction, which is also when detection can run; avoids a close-channel credential and a timer chain | gifan | Decided |
-| 2026-08-20 | A second message mid-turn queues; terminal ingest dispatches the earliest unstarted message | Queue, merge into the running turn, refuse | The log gives queueing for free; merging needs the agent to accept mid-turn input | gifan | Decided |
-| 2026-08-19 | The lease is deleted with no replacement | Fleet-wide lock, Restate-held key, no lock | agent-pi already refuses concurrent turns next to the workspace at risk; queueing is derivable from the log | gifan | Decided |
+| 2026-08-20 | A second message mid-turn queues; terminal ingest dispatches the earliest unstarted message | Queue, merge into the running turn, refuse | The log gives queueing for free; merging needs the agent to accept mid-turn input | gifan | Superseded 2026-08-20 |
+| 2026-08-20 | A queued message starts when the operation is idle — no in-flight turn and no `pending_html` | Dispatch on agent terminal vs. on accept/reject vs. wait for a new send | Agent terminal lands a proposal; `_v2_edit` holds one `pending_html` and reject must be serialized against a following turn. Accept, reject, or a terminal that does not set `pending_html` dispatches the earliest unstarted message. Accept and reject publish that resolution so a second viewer sees it | gifan | Decided |
+| 2026-08-19 | The lease is deleted with no replacement | Fleet-wide lock, Restate-held key, no lock | agent-pi already refuses concurrent turns next to the workspace at risk; queueing is derivable from the log | gifan | Superseded 2026-08-20 |
+| 2026-08-20 | Start is recorded when `POST /turn` is accepted, not when the message is written | Return `turn_id` at write time, Restate-held lease, or start on `/turn` 202 | Two idle workers can both observe no in-flight turn and both dispatch. The agent admits one; recording start only on 202 leaves the loser unstarted so idle-dispatch can pick it up. `POST /messages` returns `{cursor}` only | gifan | Decided |
 | 2026-08-20 | Hydrate only a new sandbox; no per-turn sync and no staleness marker | Re-push every turn, mark-and-check, hydrate on launch only | The agent is the only writer, so nothing diverges the workspace; a failed reject terminates the sandbox and the next turn hydrates anyway | gifan | Decided |
 | 2026-08-19 | Restate fetches the context and pushes it; the agent stays unchanged | BE pushes at launch, Restate fetches and pushes, agent pulls per turn | Smallest agent change, keeps the agent's public credential write-only, and matches the direction SOL-2878 recorded; content stays out of the journal by fetching and pushing in one step | gifan | Decided |
 | 2026-08-19 | Reuse the existing Redis rather than a dedicated instance | Dedicated instance, shared instance with bounded usage | A capped, expiring stream per operation is a few percent of a 3 GB cap; tenant separation by logical database already exists | gifan | Decided |
