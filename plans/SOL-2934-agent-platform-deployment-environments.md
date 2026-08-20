@@ -78,8 +78,7 @@ Two mechanics constrain every option below:
 | MicroVM build role | `solstice-ai-microvm-build-prod` | `-dev` | dev's |
 | MicroVM execution role | `solstice-ai-microvm-exec-prod` | `-dev` | dev's |
 | Service execution role | `solstice-ai-restate-service-prod` | `-dev` | dev's |
-| OIDC deploy role | `solstice-ai-gha-deploy-prod` | `-dev` | `-eph` |
-| GitHub Environment | `prod` | `dev` | `ephemeral` |
+| OIDC deploy role | `solstice-ai-gha-deploy` (rename deferred) | `solstice-ai-gha-deploy-dev` | `-eph` |
 | OpenRouter key | `/solstice/solstice-ai-prod/OPENROUTER_API_KEY` | `/solstice/solstice-ai-dev/...` | dev's |
 | Artifact bucket | `solstice-ai-agent-image` (existing) | `solstice-ai-agent-image-dev` | dev's |
 | Terraform state | `solstice-ai/` in the **prod** state bucket | `solstice-ai/dev/` in nonprod | `solstice-ai/dev/eph/prN/` in nonprod |
@@ -163,8 +162,10 @@ the caller until its split.
 
 ### 3.5 CI
 
-- Three GitHub Environments. OIDC trust moves from branch refs to `environment:`
-  subjects; each environment holds its own role ARN; prod gains required reviewers.
+- OIDC trust stays on branch refs: prod's role trusts `main`, dev's trusts `dev`;
+  each environment's role ARN is a repo variable the callers pass. GitHub
+  Environments, `environment:` subjects, the prod approval gate and the deploy-role
+  rename are deferred to a follow-up ticket.
 - Both container builds become PR checks, hung off the existing changed-paths
   filters and rolled into the aggregator check. From Phase 2 they also push, and the
   ephemeral environment consumes those artifacts.
@@ -187,8 +188,7 @@ the caller until its split.
 | PR closed | Deregister from `restate-dev`, then delete Lambda, log group, image, artifact and state |
 | Nightly | Sweep AWS and the Restate registry for ephemeral resources with no open PR |
 | Merge to `dev` | Build and apply the dev agent image; deploy and register the dev service |
-| Merge to `main` | Nothing — `main` is the release-cut branch |
-| Tag `v*` | As dev, against prod names, behind reviewer approval |
+| Merge to `main` | As dev, against prod names (unchanged release process; the tag-and-approval flow is deferred) |
 
 ### Context: three planes
 
@@ -240,11 +240,8 @@ stateDiagram-v2
     Ephemeral --> Branch: change rejected
     Branch --> Dev: merged to dev
     Dev --> Main: verified on dev
-    Main --> Tagged: tag v*
-    Tagged --> Prod: approval
+    Main --> Prod: merge deploys prod
     Prod --> [*]
-    Main --> Hotfix: hotfix off main
-    Hotfix --> Tagged
 ```
 
 ## 5. Trade-offs accepted
@@ -262,8 +259,8 @@ stateDiagram-v2
   image version per push — for a merge gate and near-free ephemeral environments.
   Revisit if build minutes show up in the bill; fallback is build-without-push on
   drafts.
-- Prod on a tag with approval, trading cadence for a release train shared with the
-  API. Escape hatch is the hotfix branch.
+- Prod deploys on merge to `main` with no approval gate — kept as-is by decision;
+  the tag-and-approval release train is the deferred ticket's scope.
 - Same AWS account, separated by name. Revisit when the plane holds tenant data at
   rest.
 
@@ -338,9 +335,6 @@ appear in dev first, plus weekly ephemeral spend.
 
 ## 9. Open questions
 
-- Prod from a `v*` tag, or keep push-to-`main`? Tags match Backend-Server and add
-  the approval gate.
-- Shared `v*` series with the platform, or an AI-specific prefix?
 - Which admin call purges a retired Virtual Object's state? Needed before Phase 2;
   fallback is a periodic dev journal reset.
 - Does Restate allow hyphens in service names? If so, `html-edit-session-eph-prN`
@@ -357,12 +351,14 @@ appear in dev first, plus weekly ephemeral spend.
 ## Goals and non-goals
 
 **Goals.** Independent dev and prod planes. A per-PR environment built from
-artifacts PR checks already produced, leaking nothing. A deliberate,
-approval-gated prod deploy. No deploy path on hand-made resources.
+artifacts PR checks already produced, leaking nothing. No deploy path on
+hand-made resources.
 
 **Non-goals.** Separate AWS accounts. A staging AI plane. Prod-identical dev
 capacity. A Restate server per PR. A third set of roles or keys for ephemeral. The
-automated smoke gate. Restate Cloud.
+automated smoke gate. Restate Cloud. The approval-gated, tag-based prod release
+and GitHub Environments — deferred to a follow-up ticket with the deploy-role
+rename.
 
 ## PR sequence
 
@@ -377,7 +373,7 @@ Two phases in order. Phase 1 stands alone. Each row is one child ticket.
 | 3 | Backend-Server | AI-plane resources extracted into a module with `moved` blocks | Plans clean | — |
 | 4 | Backend-Server | Per-environment roles; POC-named roles retired; dead Anthropic grants, the vestigial task-role grant and both hardcoded ARNs deleted | Old roles deleted only after a live turn passes on the new ones | 3 |
 | 5 | Backend-Server | Dev substrate — a second `ai-plane` instantiation: `restate-dev`, own snapshot bucket, dev artifact bucket, dev log groups, dev key parameter, dev deploy role, dev service added to the ECR policy, bastion on dev's ingress **and** admin listeners | `restate-dev` healthy; UI and ingress both reachable through the bastion | 3, 4 |
-| 6 | Solstice-AI | The dev terraform roots, plus dev and prod CI: GitHub Environments, `environment:` OIDC trust, reusable image deploy, parameterized service deploy, dev bootstrapped by dispatch | A merge to `dev` serves a dev sandbox; prod untouched | 2, 5 |
+| 6 | Solstice-AI | The dev terraform roots, plus per-environment CI on branch-ref OIDC: reusable image deploy, parameterized service deploy, dev bootstrapped by dispatch | A merge to `dev` serves a dev sandbox; prod untouched | 2, 5 |
 | 7 | Backend-Server | The ingress-parameter split, four steps | Each environment resolves its own ingress | 5 |
 | 8 | both | Prod's ingress stops admitting dev's security group; README, dev runbook, and Backend-Server's stale CI/CD doc corrected | Prod ingress admits prod tasks only, admin still admits the bastion | 6, 7 |
 
@@ -495,6 +491,7 @@ alerted on.
 | 2026-08-18 | The Restate server lives inside the ai-plane module | Sibling modules composed by the root | One instantiation is one whole environment plane; accepted the pass-through inputs | @gifan | Decided |
 | 2026-08-18 | The artifact bucket splits per environment (prod keeps the existing bucket; dev + ephemeral share a dev bucket) | One shared bucket with prefix-scoped grants | Same reasoning as the state bucket; kills the ephemeral artifact-prefix widening, and no data migrates — the artifact re-uploads every deploy | @gifan | Decided |
 | 2026-08-18 | Prod state moves to the prod tfstate bucket | Leave it in nonprod and document | Was an open question; migrating during the layout change costs one extra runbook step and ends the mismatch | @gifan | Decided |
+| 2026-08-19 | GitHub Environments, `environment:` OIDC subjects, the prod approval gate, tag-based prod releases and the deploy-role rename are deferred to a follow-up ticket | Ship them in PR 6 | Dev CI needs none of them — branch-ref trust already exists — and the prod release process stays unchanged; Phase 2's ephemeral trust design moves with them | @gifan | Decided |
 
 ## Sign-off
 
