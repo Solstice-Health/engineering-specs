@@ -65,9 +65,9 @@ Split the one endpoint into three. Scope paths per agent so each keeps its own c
 |---|---|
 | `POST /api/v2/agents/html-edit/{operation_id}/messages` | Send a message |
 | `GET /api/v2/agents/html-edit/{operation_id}/events` | Subscribe — any number of viewers |
-| `POST /agent-callback/agents/html-edit/{operation_id}/events` | The agent's only write path |
+| `POST /api/v2/agent-callback/{operation_id}/events` | The agent's only write path |
 
-`{agent_name}` is a naming convention, not a wildcard route: each agent mounts its own router with its own schemas, as every other v2 domain does.
+`{agent_name}` is a naming convention on the client plane, not a wildcard route: each agent mounts its own router with its own schemas, as every other v2 domain does. The callback plane is the opposite — agent-generic routes, with the token's `agent` claim selecting the implementation, so the runner never encodes the backend's agent layout in a URL.
 
 A **cursor** is an opaque string the client stores and echoes back. It is a Redis stream id today, and clients must not parse it.
 
@@ -84,9 +84,9 @@ A **cursor** is an opaque string the client stores and echoes back. It is a Redi
 - *Returns* — `text/event-stream`: the events after the cursor, then the live tail, held open until either side closes. Periodic comments keep proxies from reaping an idle tail.
 - *Errors* — a cursor trimmed out of the stream is reported, not silently skipped, so the client knows to reload history.
 
-**`POST /agent-callback/agents/html-edit/{operation_id}/events`**
-- *Auth* — the agent's short-lived token, scoped to one tenant, operation and turn, and write-only. `role` and `author` derive from it; supplying either in the body is an error, never an overwrite.
-- *Body* — a batch of events plus a per-turn sequence number. Tenant, operation and turn derive from the token, never the body; the destination URL is the runner's deployment config, never the caller's, so a runner only posts to its own gateway.
+**`POST /api/v2/agent-callback/{operation_id}/events`**
+- *Auth* — the agent's short-lived token, scoped to one tenant, agent, operation and turn, and write-only. `role` and `author` derive from it; supplying either in the body is an error, never an overwrite.
+- *Body* — a batch of events plus a per-turn sequence number. Tenant, agent, operation and turn derive from the token, never the body; the destination URL is the runner's deployment config, never the caller's, so a runner only posts to its own gateway.
 - *Returns* — `200` with the cursor of the last event accepted. A batch is accepted whole or rejected whole.
 - *Errors* — `409` on a replayed sequence number, so a retry after a timeout is free; `422` on an event kind the agent did not declare.
 
@@ -188,7 +188,6 @@ What changes:
 
 ## 7. Open questions
 
-- Does the callback route sit under `/api/v2` or beside it? The v2 manifest claims to be the single source of truth for what sits there behind Auth0, and this is a different audience with a different credential.
 - Should accept and reject emit events? Probably yes, or a second viewer never learns the proposal was resolved.
 
 ---
@@ -222,7 +221,7 @@ No feature flags: the switch is which endpoint the frontend calls, so old and ne
 
 ## Security and compliance
 
-- **New credentials, both narrow.** The agent's is short-lived, scoped to `{tenant, operation_id, turn_id}`, and **write-only**. `role` and `author` derive from it and are rejected if supplied in a body — the security-critical rule, since without it anything reaching the route could post as the agent or as another user. Restate's is a read token for one operation, never exposed to the internet.
+- **New credentials, both narrow.** The agent's is short-lived, scoped to `{tenant, agent, operation_id, turn_id}`, and **write-only**. `role` and `author` derive from it and are rejected if supplied in a body — the security-critical rule, since without it anything reaching the route could post as the agent or as another user. Restate's is a read token for one operation, never exposed to the internet.
 - **New public surface.** The callback route is reachable from the internet because sandbox egress is internet-only. It is mounted outside the Auth0 dependency with its own token dependency, and should be rate-limited per operation.
 - **Redis.** Holds chat content in a capped, expiring stream on the existing in-VPC instance, tenant-separated by the existing per-tenant logical database. Not a new processor, not a new store of record — Postgres remains the only durable copy.
 - **Restate.** Journals and stores no tenant data — ids only; the bundle transits a single journaled step without being recorded — so SOL-2878's hosting and rollback position is unchanged.
@@ -242,6 +241,7 @@ No feature flags: the switch is which endpoint the frontend calls, so old and ne
 | 2026-08-20 | Hydrate only a new sandbox; no per-turn sync and no staleness marker | Re-push every turn, mark-and-check, hydrate on launch only | The agent is the only writer, so nothing diverges the workspace; a failed reject terminates the sandbox and the next turn hydrates anyway | gifan | Decided |
 | 2026-08-19 | Restate fetches the context and pushes it; the agent stays unchanged | BE pushes at launch, Restate fetches and pushes, agent pulls per turn | Smallest agent change, keeps the agent's public credential write-only, and matches the direction SOL-2878 recorded; content stays out of the journal by fetching and pushing in one step | gifan | Decided |
 | 2026-08-19 | Reuse the existing Redis rather than a dedicated instance | Dedicated instance, shared instance with bounded usage | A capped, expiring stream per operation is a few percent of a 3 GB cap; tenant separation by logical database already exists | gifan | Decided |
+| 2026-08-24 | The callback plane lives in the v2 manifest (`/api/v2/agent-callback`) with agent-generic routes; the token's `agent` claim selects the implementation | Beside `/api/v2` with per-agent routes vs. in the manifest with generic routes | The manifest states every v2 surface's auth at inclusion (health already shows non-Auth0 is fine there), and the URL was doing implementation dispatch a claim does better — the runner needs only its base URL and operation | gifan | Decided |
 | 2026-08-19 | No new table and no new column; the cursor lives in Redis | New event table, a `seq` column on `n_cg_operation_messages`, or a Redis-only cursor | The message table is already the durable log; a second copy buys only exact resume after a long absence, which a history reload covers | gifan | Decided |
 
 ## Sign-off
