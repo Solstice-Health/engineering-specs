@@ -74,7 +74,7 @@ A **cursor** is an opaque string the client stores and echoes back. It is a Redi
 **`POST …/{operation_id}/messages`**
 - *Auth* — the same bearer token as every other v2 route, with brand access enforced on the path param.
 - *Body* — the prompt, a client-generated message id, and today's optional extras: attachments, selection, target banner, intelligence mode.
-- *Returns* — `202 {cursor}` as soon as the row is written, plus `turn_id` when this call starts a turn. Never a stream.
+- *Returns* — `202 {cursor}` once the row is written and published — and, when this call starts a turn, once the turn is dispatched (the runner 202s; the dispatch awaits only Restate `initialize`, seconds). Never a stream.
 - *Errors* — idempotent on the client message id, so a double-click writes one message.
 - A message arriving while a turn is in flight is written and published; it does not start a turn. The write that accepts the running turn's terminal dispatches the earliest unstarted message, if one exists.
 
@@ -90,7 +90,7 @@ A **cursor** is an opaque string the client stores and echoes back. It is a Redi
 - *Returns* — `200` with the cursor of the last event accepted. A batch is accepted whole or rejected whole.
 - *Errors* — `409` on a replayed sequence number, so a retry after a timeout is free; `422` on an event kind the agent did not declare.
 
-**`POST …/{operation_id}/warmup`** — not an event route. Fire-and-forget on page load, `202` immediately, so the first message does not pay for a cold launch.
+**`POST …/{operation_id}/warmup`** — not an event route. Fire-and-forget on page load, `202` immediately, so the first message does not pay for a cold launch. Implemented as a one-way Restate `initialize` send: the backend awaits only the ingress enqueue ack; the build itself is Restate's, and survives a backend restart.
 
 ### Control flow
 
@@ -203,7 +203,7 @@ Three repositories deploy independently, so a PR cannot span them, setting the f
 | PR | Repo | What it does |
 |---|---|---|
 | 1 | Solstice-AI | `/turn` gains an optional callback — given one it returns `202` and posts batched events, without one it streams NDJSON as today. Restate gains `initialize`: ensure plus hydration, returning a turn-ready sandbox. All of it dormant until Backend-Server calls it. |
-| 2 | Backend-Server | The Redis publisher, `GET …/events`, `POST …/messages` with its initialize-and-dispatch task, the context-bundle route `initialize` hydrates from, stale-turn closure, scoped paths for `accept`/`reject`/`interrupt`/`warmup` with the old ones kept as aliases, and the agent-callback route with its token minting. `POST …/messages` initializes and dispatches from the start; today's `/stream` keeps using the relay and additionally publishes each frame it relays. |
+| 2 | Backend-Server | The Redis publisher, `GET …/events`, `POST …/messages` with its inline initialize-and-dispatch, the context-bundle route `initialize` hydrates from, stale-turn closure, scoped paths for `accept`/`reject`/`interrupt`/`warmup` with the old ones kept as aliases, and the agent-callback route with its token minting. `POST …/messages` initializes and dispatches from the start; today's `/stream` keeps using the relay and additionally publishes each frame it relays. |
 | 3 | Solstice-Frontend | Subscribe on mount and render from the log, send over `POST …/messages`, and delete the polling, the lease and the `423` handling. |
 | 4–6 | One each | Delete `TurnRelay`, `/stream`, the aliases, the event mapping layer, and NDJSON support in `/turn`; `runner_client` and `restate_client` shrink to the calls the new path uses. |
 
@@ -241,6 +241,7 @@ No feature flags: the switch is which endpoint the frontend calls, so old and ne
 | 2026-08-20 | Hydrate only a new sandbox; no per-turn sync and no staleness marker | Re-push every turn, mark-and-check, hydrate on launch only | The agent is the only writer, so nothing diverges the workspace; a failed reject terminates the sandbox and the next turn hydrates anyway | gifan | Decided |
 | 2026-08-19 | Restate fetches the context and pushes it; the agent stays unchanged | BE pushes at launch, Restate fetches and pushes, agent pulls per turn | Smallest agent change, keeps the agent's public credential write-only, and matches the direction SOL-2878 recorded; content stays out of the journal by fetching and pushing in one step | gifan | Decided |
 | 2026-08-19 | Reuse the existing Redis rather than a dedicated instance | Dedicated instance, shared instance with bounded usage | A capped, expiring stream per operation is a few percent of a 3 GB cap; tenant separation by logical database already exists | gifan | Decided |
+| 2026-08-24 | No backend background tasks: dispatch is awaited inline by whichever request triggers it; warmup is a one-way Restate send | Detached driver task vs. inline await vs. FastAPI BackgroundTasks | The long-running work already lives in Restate (initialize) and the runner (the turn); the backend's part lasts seconds, and awaiting it keeps one code path with no disposable-driver machinery. Warmup's durability moves to Restate, where a send survives a backend restart | gifan | Decided |
 | 2026-08-24 | The callback plane lives in the v2 manifest (`/api/v2/agent-callback`) with agent-generic routes; the token's `agent` claim selects the implementation | Beside `/api/v2` with per-agent routes vs. in the manifest with generic routes | The manifest states every v2 surface's auth at inclusion (health already shows non-Auth0 is fine there), and the URL was doing implementation dispatch a claim does better — the runner needs only its base URL and operation | gifan | Decided |
 | 2026-08-19 | No new table and no new column; the cursor lives in Redis | New event table, a `seq` column on `n_cg_operation_messages`, or a Redis-only cursor | The message table is already the durable log; a second copy buys only exact resume after a long absence, which a history reload covers | gifan | Decided |
 
