@@ -85,7 +85,7 @@ A **cursor** is an opaque string the client stores and echoes back. It is a Redi
 - *Errors* — a cursor trimmed out of the stream is reported, not silently skipped, so the client knows to reload history.
 
 **`POST /api/v2/agent-callback/{operation_id}/events`**
-- *Auth* — the agent's short-lived token, scoped to one tenant, agent, operation and turn, and write-only. `role` and `author` derive from it; supplying either in the body is an error, never an overwrite.
+- *Auth* — the agent's short-lived token, scoped to one tenant, agent, operation and turn, and write-only. `role` and `author` derive from it (including `obo`, the triggering user, captured at mint time); supplying either in the body is an error, never an overwrite.
 - *Body* — a batch of events plus a per-turn sequence number. Tenant, agent, operation and turn derive from the token, never the body; the destination URL is the runner's deployment config, never the caller's, so a runner only posts to its own gateway.
 - *Returns* — `200` with the cursor of the last event accepted. A batch is accepted whole or rejected whole.
 - *Errors* — `409` on a replayed sequence number, so a retry after a timeout is free; `422` on an event kind the agent did not declare.
@@ -221,7 +221,7 @@ No feature flags: the switch is which endpoint the frontend calls, so old and ne
 
 ## Security and compliance
 
-- **New credentials, both narrow.** The agent's is short-lived, scoped to `{tenant, agent, operation_id, turn_id}`, and **write-only**. `role` and `author` derive from it and are rejected if supplied in a body — the security-critical rule, since without it anything reaching the route could post as the agent or as another user. Restate's is a read token for one operation, never exposed to the internet.
+- **New credentials, both narrow.** The agent's is short-lived, scoped to `{tenant, agent, operation_id, turn_id}` plus `obo` (the triggering user — the token is the attribution carrier; message rows hold no turn pairing), and **write-only**. `role` and `author` derive from it and are rejected if supplied in a body — the security-critical rule, since without it anything reaching the route could post as the agent or as another user. Restate's is a read token for one operation, never exposed to the internet.
 - **New public surface.** The callback route is reachable from the internet because sandbox egress is internet-only. It is mounted outside the Auth0 dependency with its own token dependency, and should be rate-limited per operation.
 - **Redis.** Holds chat content in a capped, expiring stream on the existing in-VPC instance, tenant-separated by the existing per-tenant logical database. Not a new processor, not a new store of record — Postgres remains the only durable copy.
 - **Restate.** Journals and stores no tenant data — ids only; the bundle transits a single journaled step without being recorded — so SOL-2878's hosting and rollback position is unchanged.
