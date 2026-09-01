@@ -2,7 +2,7 @@
 
 Before merge-bound code, the approach gets a written plan and a quick peer review. This page defines the categories of work, the process for each, and what sign-off means.
 
-Templates: [Engineering Plan Template](templates/plan-template.md) · [Spike Brief Template](templates/spike-brief.md) · [Experiment Brief Template](templates/experiment-brief.md) · [Postmortem Template](templates/postmortem-template.md). Plans live in [`plans/`](plans/), one file per plan, reviewed as a pull request in this repo. Ticket rules extend the Product Engineering Working Agreement.
+Templates: [Engineering Plan Template](templates/plan-template.md) · [Spike Brief Template](templates/spike-brief.md) · [Experiment Brief Template](templates/experiment-brief.md) · [Postmortem Template](templates/postmortem-template.md). Plans live in [`plans/`](plans/), one file per plan. Postmortems live in [`postmortems/`](postmortems/). Both are reviewed as a pull request in this repo. Ticket rules extend the Product Engineering Working Agreement.
 
 ## The five categories
 
