@@ -2,9 +2,9 @@
 
 Before merge-bound code, the approach gets a written plan and a quick peer review. This page defines the categories of work, the process for each, and what sign-off means.
 
-Templates: [Engineering Plan Template](templates/plan-template.md) · [Spike Brief Template](templates/spike-brief.md). Plans live in [`plans/`](plans/), one file per plan, reviewed as a pull request in this repo. Ticket rules extend the Product Engineering Working Agreement.
+Templates: [Engineering Plan Template](templates/plan-template.md) · [Spike Brief Template](templates/spike-brief.md) · [Experiment Brief Template](templates/experiment-brief.md). Plans live in [`plans/`](plans/), one file per plan, reviewed as a pull request in this repo. Ticket rules extend the Product Engineering Working Agreement.
 
-## The four categories
+## The five categories
 
 | Category | The work | Doc | Review | In Linear |
 |---|---|---|---|---|
@@ -12,6 +12,7 @@ Templates: [Engineering Plan Template](templates/plan-template.md) · [Spike Bri
 | Tier 1 | The default for feature, refactor, and debt work | Plan, one page | 2 reviewers, 24 hours | needs-plan label, plan PR link in the description |
 | Tier 2 | Anything that trips a trigger below, regardless of size | Plan, with the Tier 2 sections kept in | 2 reviewers including the domain owner, 24 hours | needs-plan; usually epic-level, child tickets come from Phasing |
 | Spike | A timeboxed question with exit criteria | Spike Brief | 2 reviewers, same day | Spike label, due date is the timebox |
+| Experiment | A change to output quality, run as arms over a fixed test set | Experiment Brief | 2 reviewers, same day | Spike label, due date is the timebox |
 
 **Tier 2 triggers** (same list as the template): touches auth, tenancy, or permissions; handles PHI or client data in a new way; schema migration on existing tables; new external dependency, vendor, or infrastructure; changes a cross-service or client-facing API contract; hard to reverse, meaning undo takes over a day, loses data, or is visible to clients. When in doubt, take the higher tier.
 
@@ -48,6 +49,12 @@ Templates: [Engineering Plan Template](templates/plan-template.md) · [Spike Bri
 - Which database serves the knowledge graph: Postgres (recursive CTEs, AGE) or Neo4j? 2 days
 - Does headless Chrome hold frame rate for video export at 1080p? 1 day
 
+**Experiment**
+
+- Generic banner examples in context: control against treatment over 6 briefs × 4 sizes, keep at 16 of 24
+- Brand rules, brand-guide PDF, or both as the generation context, judged by blind vote on Slack
+- A cheaper model on one asset type: same briefs on every arm, cost per asset recorded beside quality
+
 ## Close calls
 
 | This | That | Why they tier differently |
@@ -56,6 +63,8 @@ Templates: [Engineering Plan Template](templates/plan-template.md) · [Spike Bri
 | Internal endpoint on existing patterns: Tier 1 | Client-facing API contract: Tier 2 | External consumers make later changes expensive |
 | Swapping model tier on an existing path: Tier 0 or 1 | Adding a new external vendor: Tier 2 | A new processor changes data flow and ops surface |
 | Reading vendor docs to inform a plan: part of the plan | Timeboxed bake-off with fixed criteria: Spike | A spike answers one named question with evidence |
+| Bake-off between approaches or vendors: Spike | Arms judged on output quality over the same inputs: Experiment | A spike picks a technology; an experiment measures one change against control |
+| Tune a prompt and eyeball the output: Tier 0 | Keep-or-drop decided over a fixed test set: Experiment | The tune is cheap to try; the keep decision is the part that needs evidence |
 
 ## The process, per category
 
@@ -85,8 +94,15 @@ Templates: [Engineering Plan Template](templates/plan-template.md) · [Spike Bri
 
 1. Spike ticket with the Spike label; the due date is the timebox.
 2. Copy [`templates/spike-brief.md`](templates/spike-brief.md) to `plans/SOL-XXXX-spike-short-slug.md` and open a PR with Question, Candidates and criteria, Method, and Exit criteria filled. Both reviewers approve it the same day, before the clock starts.
-3. Run it. Spike code is throwaway by default. Changes to the experiment go under Deviations.
+3. Run it. Spike code is throwaway by default. Changes to the method go under Deviations.
 4. Write Findings and a Recommendation. No sign-off on findings: the binding decision belongs to the Plan the spike seeds. A proceed recommendation spawns the follow-on ticket with needs-plan.
+
+### Experiment
+
+1. Experiment ticket with the Spike label; the due date is the timebox.
+2. Copy [`templates/experiment-brief.md`](templates/experiment-brief.md) to `plans/SOL-XXXX-experiment-short-slug.md` and open a PR with everything above Results filled: hypothesis, arms, test set, judgment, decision rule. Both reviewers approve it the same day, before the first run.
+3. Run every arm over the full test set at the same volume, on the pinned model and config. Changes while running go under Deviations.
+4. Write Results with links to the real outputs and apply the decision rule. No sign-off on results: a kept change ships through normal code review, or seeds a Plan when it trips a tier.
 
 ## How to approach the doc as an author
 
@@ -132,6 +148,7 @@ Sign-off is both named reviewers approving the plan PR, mirrored in the plan's S
 - Definition of Ready gains one condition: a needs-plan ticket is committed at Monday planning only when its plan is Approved.
 - No new statuses. Plan writing and review happen while the ticket sits in Backlog or Todo.
 - Spike tickets keep the Spike label; the due date is the timebox; the brief PR link goes in the description.
+- Experiment tickets ride the same mechanics as spikes: Spike label, due date is the timebox, brief PR link in the description. No new label.
 - cursor:ready goes on a needs-plan ticket only after the plan is Approved. For plan-tier work, an approved plan is what "spec is complete" means.
 - Optional saved view for Monday planning: label needs-plan, status Backlog or Todo.
 
