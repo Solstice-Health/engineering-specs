@@ -100,7 +100,7 @@ Templates: [Engineering Plan Template](templates/plan-template.md) · [Spike Bri
 ### Experiment
 
 1. Experiment ticket with the Spike label; the due date is the timebox.
-2. Copy [`templates/experiment-brief.md`](templates/experiment-brief.md) to `plans/SOL-XXXX-experiment-short-slug.md` and open a PR with everything above Results filled: hypothesis, arms, test set, judgment, decision rule. Both reviewers approve it the same day, before the first run.
+2. Copy [`templates/experiment-brief.md`](templates/experiment-brief.md) to `plans/SOL-XXXX-experiment-short-slug.md` and open a PR with hypothesis, arms, test set, and decision rule filled. Both reviewers approve it the same day, before the first run.
 3. Run every arm over the full test set at the same volume, on the pinned model and config. Changes while running go under Deviations.
 4. Write Results with links to the real outputs and apply the decision rule. No sign-off on results: a kept change ships through normal code review, or seeds a Plan when it trips a tier.
 
