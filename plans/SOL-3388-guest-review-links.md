@@ -154,9 +154,9 @@ stateDiagram-v2
 
 ## 9. Open questions
 
-1. Should a reviewer be able to resolve or reopen a thread? A customer account can; the guest currently cannot.
-2. The shared comments rail offers edit and delete on every card because it gates on handler presence, not authorship. The server refuses correctly, so this is an affordance bug. Gate per-comment in the shared component, or leave accounts as they are and gate only the guest?
-3. Keep the old public share link alongside the review link, or retire it? It is the riskier of the two: permanent public bucket, no revoke.
+1. **PDF assets.** Minting is refused for them today (see Goals and non-goals). The route in is a guest-owned XFDF layer written by its own narrow endpoint, so a reviewer's save can never drop staff marks; the alternative is server-side XFDF merging by annotation id. Which, and when?
+2. **Rail freshness.** Staff and customer rails read comments on load, so a reviewer's comment appears only after a refetch. Focus-refresh like the guest shell, or leave it to the next load?
+3. **Guest attachments.** Reviewers can read attachments but not add them; the upload endpoint is not built. Phase 3 as planned, or sooner?
 
 ---
 
@@ -167,6 +167,8 @@ stateDiagram-v2
 **Goals.** One shareable link per asset. Verified email on every comment. Staff can expire, extend and revoke. A reviewer sees exactly the proof a customer account sees.
 
 **Non-goals.** Invite emails and named recipients. Domain allowlists. View-only links. Attachments from a guest (planned, not in this phase). Mobile layout. Guest notifications. Review sets across assets.
+
+**PDF assets are out for now**, and minting refuses them rather than issuing a link that opens nothing: the guest shell renders the PRC proof, while PDF review runs on Apryse and draws exclusively from `pdfAnnotationsXfdf` (`render-approved-pdf.tsx:293` returns early without it). A guest thread written only into `markupAnnotations` would list in the rail with no mark on the page. On the dev tenant 47 operations currently have a PDF as their newest published version, so this is common, not an edge case.
 
 ## Migration and rollout
 
@@ -221,6 +223,11 @@ Three months later this failed because a link was forwarded past the intended re
 | 2026-09-08 | No draft-then-submit batch for guests | Match the customer batch flow, live on write | Reviewer feedback should not wait behind a second action | Ercan | Decided |
 | 2026-09-08 | Guests see published versions only, matching a customer account | Latest published, latest of any intent | Same rule `resolve_message_read_visibility` already applies to non-staff readers | Ercan | Decided |
 | 2026-09-08 | Version badges stay relative to what a guest can see | Relative, absolute like staff | The customer surface already numbers relative; matching staff would diverge from customers | Ercan | Decided |
+| 2026-09-08 | Earlier published versions are read-only for guests | Read-only, comment on any version | A comment should reference what the reviewer saw; a V1 pin over V2 copy misstates the record | Ercan | Decided |
+| 2026-09-08 | Guests do not resolve or reopen threads | Match the account surface, staff-only | Closing a thread is a review decision, not a reviewer's | Ercan | Decided |
+| 2026-09-08 | The public link stays, as a separate action | Replace it with the review link, keep both | Different promise to the recipient: a copy anyone can open versus an attributed commenting surface | Ercan | Decided |
+| 2026-09-08 | Guest edit and delete act on the caller's own comment, and the rail only offers controls the API accepts | Thread-level controls with server-side refusal, per-comment gating | `comments[0]` is the reviewer's comment only when they opened the thread, so the control both errored and hid their own reply | Claude, confirmed by Ercan | Decided |
+| 2026-09-08 | PDF assets refused at mint until a guest-owned XFDF layer exists | Refuse, ship rail-only comments, merge XFDF server-side | Apryse draws only from the XFDF blob, and that blob is whole-layer last-writer-wins | Ercan | Decided for now |
 
 ## Sign-off
 
