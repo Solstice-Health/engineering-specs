@@ -154,9 +154,11 @@ stateDiagram-v2
 
 ## 9. Open questions
 
-1. **PDF assets, revisited later.** Minting is refused today (see Goals and non-goals). Roughly half a day: Apryse in the guest shell plus a narrow writer for `pdfAnnotationsXfdf`. The one open choice is whether guests share the staff XFDF layer, as client accounts already do, or get their own key so a reviewer's save can never drop staff marks.
-2. **Rail freshness.** Staff and customer rails read comments on load, so a reviewer's comment appears only after a refetch. Focus-refresh like the guest shell, or leave it to the next load?
-3. **Guest attachments.** Reviewers can read attachments but not add them; the upload endpoint is not built. Phase 3 as planned, or sooner?
+None. The three that were open during the build are settled and recorded in the decision log; two carry follow-up tickets.
+
+- **PDF assets**: implement later, as a follow-up. Roughly half a day (Apryse in the guest shell plus a narrow writer for `pdfAnnotationsXfdf`). Minting refuses PDF assets until it lands, so nobody shares a link that opens nothing.
+- **Guest attachments**: follow-up. Reviewers can read attachments today; the upload endpoint is not built.
+- **Rail freshness**: no change. The guest shell refreshes on window focus and after every write. The staff and customer rails do not, by design: their comments come from the operation messages query, which the global `QueryClient` gives `staleTime: 3h` with `refetchOnWindowFocus: false` and the query itself pins to `staleTime: Infinity`. That query also feeds the editor, so refetching on focus would remount the proof under someone who tabbed away mid-edit. Staff learn about a guest comment through the notification the append already sends, and opening the asset from it mounts fresh.
 
 ---
 
@@ -231,7 +233,9 @@ Three months later this failed because a link was forwarded past the intended re
 | 2026-09-08 | Guests do not resolve or reopen threads | Match the account surface, staff-only | Closing a thread is a review decision, not a reviewer's | Ercan | Decided |
 | 2026-09-08 | The public link stays, as a separate action | Replace it with the review link, keep both | Different promise to the recipient: a copy anyone can open versus an attributed commenting surface | Ercan | Decided |
 | 2026-09-08 | Guest edit and delete act on the caller's own comment, and the rail only offers controls the API accepts | Thread-level controls with server-side refusal, per-comment gating | `comments[0]` is the reviewer's comment only when they opened the thread, so the control both errored and hid their own reply | Claude, confirmed by Ercan | Decided |
-| 2026-09-08 | PDF assets refused at mint until a guest-owned XFDF layer exists | Refuse, ship rail-only comments, merge XFDF server-side | Apryse draws only from the XFDF blob, and that blob is whole-layer last-writer-wins | Ercan | Decided for now |
+| 2026-09-08 | PDF assets refused at mint, support implemented later | Refuse, ship rail-only comments, merge XFDF server-side | Apryse draws only from the XFDF blob, so a rail-only thread leaves no mark; refusing keeps staff from sharing a link that opens nothing | Ercan | Decided, follow-up ticket |
+| 2026-09-08 | Guest attachments are a follow-up | Ship with uploads, ship read-only first | Reading attachments covers the review conversation; uploading is additive | Ercan | Decided, follow-up ticket |
+| 2026-09-08 | Staff and customer rails keep load-time comment reads | Focus refetch like the guest shell, no change | The messages query also feeds the editor, so a focus refetch would remount the proof mid-edit; the guest-comment notification already tells staff | Claude, confirmed by Ercan | Decided |
 
 ## Sign-off
 
