@@ -154,7 +154,7 @@ stateDiagram-v2
 
 ## 9. Open questions
 
-1. **PDF assets.** Minting is refused for them today (see Goals and non-goals). The route in is a guest-owned XFDF layer written by its own narrow endpoint, so a reviewer's save can never drop staff marks; the alternative is server-side XFDF merging by annotation id. Which, and when?
+1. **PDF assets, revisited later.** Minting is refused today (see Goals and non-goals). Roughly half a day: Apryse in the guest shell plus a narrow writer for `pdfAnnotationsXfdf`. The one open choice is whether guests share the staff XFDF layer, as client accounts already do, or get their own key so a reviewer's save can never drop staff marks.
 2. **Rail freshness.** Staff and customer rails read comments on load, so a reviewer's comment appears only after a refetch. Focus-refresh like the guest shell, or leave it to the next load?
 3. **Guest attachments.** Reviewers can read attachments but not add them; the upload endpoint is not built. Phase 3 as planned, or sooner?
 
@@ -168,7 +168,11 @@ stateDiagram-v2
 
 **Non-goals.** Invite emails and named recipients. Domain allowlists. View-only links. Attachments from a guest (planned, not in this phase). Mobile layout. Guest notifications. Review sets across assets.
 
-**PDF assets are out for now**, and minting refuses them rather than issuing a link that opens nothing: the guest shell renders the PRC proof, while PDF review runs on Apryse and draws exclusively from `pdfAnnotationsXfdf` (`render-approved-pdf.tsx:293` returns early without it). A guest thread written only into `markupAnnotations` would list in the rail with no mark on the page. On the dev tenant 47 operations currently have a PDF as their newest published version, so this is common, not an edge case.
+**PDF assets are out of this phase and will be revisited later.** Minting refuses them rather than issuing a link that opens nothing: the guest shell renders the PRC proof, while PDF review runs on Apryse and draws exclusively from `pdfAnnotationsXfdf` (`render-approved-pdf.tsx:293` returns early without it), so a guest thread written only into `markupAnnotations` would list in the rail with no mark on the page.
+
+Scale: PDFs are the newest published version on roughly 4 to 5% of published assets across the reachable dev tenants (8.9% raw, but one synthetic database contributes half the PDFs and one slug appears to duplicate another). Prod was not measured.
+
+The work is small, and smaller than first estimated: mount the Apryse viewer in the guest shell and reuse the existing restore and persist effects, plus one narrow writer for `pdfAnnotationsXfdf`, needed only because guests are kept off the whole-metadata PATCH. Two concerns raised earlier did not survive checking: the Apryse licence is a public env var (`NEXT_PUBLIC_APRYSE_KEY`) already shipped to every browser, and the whole-layer XFDF overwrite is a risk client accounts already carry today through the same un-gated `savePdfMarkupState` path.
 
 ## Migration and rollout
 
