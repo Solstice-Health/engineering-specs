@@ -43,7 +43,19 @@ Added:
 - Two narrow helpers on `message_table_repository` that read and write **only** `metadata->'markupAnnotations'` under a row lock, via `jsonb_set`.
 - Frontend `features/guest-review/*` plus `app/review/page.tsx`, and three Next route handlers under `app/api/review-auth/*` that drive Auth0's Authentication API directly (`/passwordless/start`, then the passwordless OTP grant) and keep the reviewer's token in an httpOnly cookie.
 
-Deleted: nothing. The static share link stays; the asset menu item now mints a review link instead.
+Deleted: nothing. The static share link stays, as its own "Create Public Link" action beside "Create Review Link".
+
+**Changes to shared components**, which is where the blast radius sits. Each is additive and defaults to today's behavior, so the staff and customer surfaces are unchanged unless noted:
+
+| File | Change | Affects accounts? |
+|---|---|---|
+| `features/content-editor/views/markup-overlay.tsx` | `drawingDisabled` prop (pins render and open, no new drag); re-post markup state when the bridge publishes `sol-prc-proof-geometry`; `focus:outline-none` on the canvas | Yes, twice, both fixes: pins now paint on first load instead of waiting for a payload change, and the stray blue focus ring is gone |
+| `components/content-workspace/components/ChatPanel/markup-comments-view.tsx` | `canMutateThread` / `canReplyToThread` per-thread gates | No, permissive default |
+| `components/content-workspace/components/ChatPanel/build-timeline-items.ts` | a thread from a review link reads Submitted, not Draft | Yes, and intended: staff saw reviewer comments labelled Draft |
+| `features/content-editor/markup-annotations.ts` | `origin: 'review_link'` and guest-authored threads bypass the own-drafts filter | Yes, and required: without it staff never see a reviewer's comment |
+| `components/intake-workflow/assets/brief-sidebar.tsx` | passes the two gates through | No |
+| `components/content-workspace/markup/comment-attachments.tsx` | `MarkupAttachmentOpening` context, default enabled | No |
+| `entities/operation/model/messages.ts` | `origin` union gains `'review_link'` | No |
 
 ## 4. System views
 
@@ -147,7 +159,7 @@ stateDiagram-v2
 
 ## 8. Verification
 
-- 57 backend tests across `test_review_link_routes.py` and `test_review_link_comments.py`: token shape and hashing, expiry and revocation on grant, link/token mismatch, missing header, append leaving non-comment metadata untouched, own-comment edit and delete author checks, forged identity and status fields stripped, 401 rather than 403 when there is no session.
+- 60 backend tests across `test_review_link_routes.py` and `test_review_link_comments.py`: token shape and hashing, expiry and revocation on grant, link/token mismatch, missing header, append leaving non-comment metadata untouched, own-comment edit and delete author checks, forged identity and status fields stripped, 401 rather than 403 when there is no session, a comment aimed at a superseded version refused before `jsonb_set`, and minting refused for a PDF asset or one with nothing published.
 - Live smoke against the dev tenant (`sanofi_sandbox`): mint, list, resolve without auth, grant, asset reads, thread create, reply, edit, delete, and the negative cases.
 - Browser: real passwordless sign-in with an outside address, proof rendered from the bake, pin drawn in-proof, comment created and visible to staff on the same row.
 - After ship, watch `review_link_events` (grants against denials), Auth0 tenant logs for send failures, and the guest routes' error rate in Datadog.
@@ -157,7 +169,7 @@ stateDiagram-v2
 None. The three that were open during the build are settled and recorded in the decision log; two carry follow-up tickets.
 
 - **PDF assets**: implement later, as a follow-up. Roughly half a day (Apryse in the guest shell plus a narrow writer for `pdfAnnotationsXfdf`). Minting refuses PDF assets until it lands, so nobody shares a link that opens nothing.
-- **Guest attachments**: follow-up. Reviewers can read attachments today; the upload endpoint is not built.
+- **Guest attachments**: follow-up, both directions. A reviewer sees an attachment's name but cannot open it: resolving one calls `download-url-for-s3-key` on the shared axios instance, which needs a platform session and hard-navigates on 401, so a click used to eject the reviewer to the login page. Opening is now disabled on that surface and the chip renders as a plain label. The follow-up adds a guest presign endpoint scoped to keys referenced by this asset's comments, and then uploads.
 - **Rail freshness**: no change. The guest shell refreshes on window focus and after every write. The staff and customer rails do not, by design: their comments come from the operation messages query, which the global `QueryClient` gives `staleTime: 3h` with `refetchOnWindowFocus: false` and the query itself pins to `staleTime: Infinity`. That query also feeds the editor, so refetching on focus would remount the proof under someone who tabbed away mid-edit. Staff learn about a guest comment through the notification the append already sends, and opening the asset from it mounts fresh.
 
 ---
@@ -168,7 +180,7 @@ None. The three that were open during the build are settled and recorded in the 
 
 **Goals.** One shareable link per asset. Verified email on every comment. Staff can expire, extend and revoke. A reviewer sees exactly the proof a customer account sees.
 
-**Non-goals.** Invite emails and named recipients. Domain allowlists. View-only links. Attachments from a guest (planned, not in this phase). Mobile layout. Guest notifications. Review sets across assets.
+**Non-goals.** Invite emails and named recipients. Domain allowlists. View-only links. Guest attachments in either direction, opening or uploading (follow-up). Mobile layout. Guest notifications. Review sets across assets.
 
 **PDF assets are out of this phase and will be revisited later.** Minting refuses them rather than issuing a link that opens nothing: the guest shell renders the PRC proof, while PDF review runs on Apryse and draws exclusively from `pdfAnnotationsXfdf` (`render-approved-pdf.tsx:293` returns early without it), so a guest thread written only into `markupAnnotations` would list in the rail with no mark on the page.
 
@@ -198,7 +210,7 @@ The work is small, and smaller than first estimated: mount the Apryse viewer in 
 
 - **Phase 1, done:** tables, guest router, comment rules, the `/review` shell with proof, comments, version dropdown, and email-code sign-in. Demoable.
 - **Phase 2, ~1 day:** staff Share dialog with copy, expiry, extend and revoke, replacing the hand-driven endpoints.
-- **Phase 3, ~1 day:** guest attachments (upload plus presign, reusing the staff storage helper).
+- **Phase 3, ~1 day:** guest attachments. Presign first, scoped to keys this asset's comments reference, so a reviewer can open what staff attached; then uploads, reusing the staff storage helper.
 - **Phase 4, ~0.5 day:** staff notification polish and the affordance gating in question 2.
 
 ## Deploy view
@@ -234,7 +246,7 @@ Three months later this failed because a link was forwarded past the intended re
 | 2026-09-08 | The public link stays, as a separate action | Replace it with the review link, keep both | Different promise to the recipient: a copy anyone can open versus an attributed commenting surface | Ercan | Decided |
 | 2026-09-08 | Guest edit and delete act on the caller's own comment, and the rail only offers controls the API accepts | Thread-level controls with server-side refusal, per-comment gating | `comments[0]` is the reviewer's comment only when they opened the thread, so the control both errored and hid their own reply | Claude, confirmed by Ercan | Decided |
 | 2026-09-08 | PDF assets refused at mint, support implemented later | Refuse, ship rail-only comments, merge XFDF server-side | Apryse draws only from the XFDF blob, so a rail-only thread leaves no mark; refusing keeps staff from sharing a link that opens nothing | Ercan | Decided, follow-up ticket |
-| 2026-09-08 | Guest attachments are a follow-up | Ship with uploads, ship read-only first | Reading attachments covers the review conversation; uploading is additive | Ercan | Decided, follow-up ticket |
+| 2026-09-08 | Guest attachments are a follow-up, and opening is disabled meanwhile | Build the presign now, disable opening, leave the broken click | The click resolved through a staff-only endpoint on an axios instance that navigates to login on 401, so it ejected the reviewer mid-review | Ercan | Decided, follow-up ticket |
 | 2026-09-08 | Staff and customer rails keep load-time comment reads | Focus refetch like the guest shell, no change | The messages query also feeds the editor, so a focus refetch would remount the proof mid-edit; the guest-comment notification already tells staff | Claude, confirmed by Ercan | Decided |
 
 ## Sign-off
