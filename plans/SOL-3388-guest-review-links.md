@@ -3,6 +3,7 @@
 | | |
 |---|---|
 | **Ticket** | SOL-3388 (backend), SOL-3389 (frontend), both under Q3 Goal 2 |
+| **Code** | Backend: [Backend-Server#1262](https://github.com/Solstice-Health/Backend-Server/pull/1262). Frontend: not raised yet |
 | **Author** | @ercan |
 | **Reviewers** | 2, one owning auth/tenancy |
 | **Tier** | 2 |
@@ -41,6 +42,7 @@ Added:
 - `src/content_generation_new/application/review_links/`: `tokens.py` (128-bit hex, sha256 at rest), `guest_identity.py` (reads the verified email from `/userinfo` with the guest's own bearer), `comments.py` (pure thread rules, list in, list out).
 - `routes/api/review_link_routes.py`: `staff_router` (brand-gated, mounted with `router_dependencies`) and `guest_router` (mounted without them so `/resolve` answers before sign-in), authorized by the `require_review_link` dependency: `X-Review-Token` plus an Auth0 session, and the path's `link_id` must match the token's link.
 - Two narrow helpers on `message_table_repository` that read and write **only** `metadata->'markupAnnotations'` under a row lock, via `jsonb_set`.
+- Guest reads are separate endpoints (`/operation`, `/messages`, `/messages/{id}/content-url`, `/prc-template`, `/comments`) rather than one aggregate: `content-url` is needed per version when a reviewer opens a comment made on an earlier one, so an aggregate would mean maintaining both.
 - Frontend `features/guest-review/*` plus `app/review/page.tsx`, and three Next route handlers under `app/api/review-auth/*` that drive Auth0's Authentication API directly (`/passwordless/start`, then the passwordless OTP grant) and keep the reviewer's token in an httpOnly cookie.
 
 Deleted: nothing. The static share link stays, as its own "Create Public Link" action beside "Create Review Link".
@@ -159,7 +161,7 @@ stateDiagram-v2
 
 ## 8. Verification
 
-- 60 backend tests across `test_review_link_routes.py` and `test_review_link_comments.py`: token shape and hashing, expiry and revocation on grant, link/token mismatch, missing header, append leaving non-comment metadata untouched, own-comment edit and delete author checks, forged identity and status fields stripped, 401 rather than 403 when there is no session, a comment aimed at a superseded version refused before `jsonb_set`, and minting refused for a PDF asset or one with nothing published.
+- 60 backend tests across `test_review_link_routes.py` and `test_review_link_comments.py`, both named explicitly in `pr-checks.yml` and `deploy-dev.yml` because `tests/content_generation_new/` is not otherwise collected by CI (the whole directory is not added: it carries 10 failures that predate this work): token shape and hashing, expiry and revocation on grant, link/token mismatch, missing header, append leaving non-comment metadata untouched, own-comment edit and delete author checks, forged identity and status fields stripped, 401 rather than 403 when there is no session, a comment aimed at a superseded version refused before `jsonb_set`, and minting refused for a PDF asset or one with nothing published.
 - Live smoke against the dev tenant (`sanofi_sandbox`): mint, list, resolve without auth, grant, asset reads, thread create, reply, edit, delete, and the negative cases.
 - Browser: real passwordless sign-in with an outside address, proof rendered from the bake, pin drawn in-proof, comment created and visible to staff on the same row.
 - After ship, watch `review_link_events` (grants against denials), Auth0 tenant logs for send failures, and the guest routes' error rate in Datadog.
@@ -177,6 +179,8 @@ None.
 **Goals.** One shareable link per asset. Verified email on every comment. Staff can expire, extend and revoke. A reviewer sees exactly the proof a customer account sees.
 
 **Non-goals.** Invite emails and named recipients. Domain allowlists. View-only links. Guest attachments in either direction, opening or uploading (follow-up). Mobile layout. Guest notifications. Review sets across assets.
+
+**Guest attachments are out of this phase.** A reviewer sees an attachment's name but cannot open it: resolving one calls `download-url-for-s3-key` on the shared axios instance, which needs a platform session and navigates to login on 401, so a click ejected the reviewer from the review. Opening is disabled on that surface via a `MarkupAttachmentOpening` context (default enabled, so account surfaces are untouched). The follow-up adds a guest presign route scoped to keys this asset's comments reference, then uploads.
 
 **PDF assets are out of this phase and will be revisited later.** Minting refuses them rather than issuing a link that opens nothing: the guest shell renders the PRC proof, while PDF review runs on Apryse and draws exclusively from `pdfAnnotationsXfdf` (`render-approved-pdf.tsx:293` returns early without it), so a guest thread written only into `markupAnnotations` would list in the rail with no mark on the page.
 
