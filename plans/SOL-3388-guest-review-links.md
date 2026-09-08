@@ -166,11 +166,7 @@ stateDiagram-v2
 
 ## 9. Open questions
 
-None. The three that were open during the build are settled and recorded in the decision log; two carry follow-up tickets.
-
-- **PDF assets**: implement later, as a follow-up. Roughly half a day (Apryse in the guest shell plus a narrow writer for `pdfAnnotationsXfdf`). Minting refuses PDF assets until it lands, so nobody shares a link that opens nothing.
-- **Guest attachments**: follow-up, both directions. A reviewer sees an attachment's name but cannot open it: resolving one calls `download-url-for-s3-key` on the shared axios instance, which needs a platform session and hard-navigates on 401, so a click used to eject the reviewer to the login page. Opening is now disabled on that surface and the chip renders as a plain label. The follow-up adds a guest presign endpoint scoped to keys referenced by this asset's comments, and then uploads.
-- **Rail freshness**: no change. The guest shell refreshes on window focus and after every write. The staff and customer rails do not, by design: their comments come from the operation messages query, which the global `QueryClient` gives `staleTime: 3h` with `refetchOnWindowFocus: false` and the query itself pins to `staleTime: Infinity`. That query also feeds the editor, so refetching on focus would remount the proof under someone who tabbed away mid-edit. Staff learn about a guest comment through the notification the append already sends, and opening the asset from it mounts fresh.
+None.
 
 ---
 
