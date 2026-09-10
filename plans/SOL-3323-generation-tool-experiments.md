@@ -1,3 +1,6 @@
+# SOL-3323: Banner generation tool experiments
+
+**Ticket:** [SOL-3323](https://linear.app/solsticehealth/issue/SOL-3323)
 
 New tools the banner agent can call during generation.
 
@@ -12,8 +15,9 @@ New tools the banner agent can call during generation.
    Convert an image into an animated background with a video model like h3.
 
 3. **Text placement to complement an image**
-   Open to various approaches for understanding how to best complement a subject with text.  
+   Open to various approaches for understanding how to best complement a subject with text.
 	- SAM, rembg, etc.
+
 ## How
 
 - One tool at a time. Same 3 banners × 4 sizes.
@@ -23,6 +27,7 @@ New tools the banner agent can call during generation.
 ## Acceptance
 
 Compare each tool's 3 banners × 4 sizes against the shared without-any-tools control.
+
 ## Done
 
 12 total banners:
