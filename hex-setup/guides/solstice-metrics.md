@@ -10,7 +10,7 @@ apply the standard exclusions. If the question needs a different definition, say
 
 ## Standard exclusions (apply to every metric unless asked otherwise)
 
-- Tenants: exclude `phathom_sandbox`, `takeda_sandbox`, `testing_demo`.
+- Tenants: exclude any tenant slug ending in `_sandbox` (for example `phathom_sandbox`, `takeda_sandbox`, `alexion_sandbox`) and `testing_demo`. In PostHog, sandbox slugs appear that have no Hex connection; exclude them the same way.
 - Rows: exclude soft-deleted rows (`deleted_at IS NULL`).
 - Test content: exclude assets whose `file_name` starts with `#TEST` and assets in
   projects or folders whose name starts with `#TEST`.

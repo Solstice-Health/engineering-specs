@@ -12,7 +12,7 @@ every customer appears in the same tables, so use it for questions across all cu
 
 | Table | What a row is | Notes |
 |---|---|---|
-| `accounts` | A customer company | `name`, `msa` (master services agreement). |
+| `accounts` | A customer company | `name`, `msa` (master services agreement), `tenant_slug` (the exact platform tenant key; use it for every join to tenant data or PostHog). |
 | `deals` | A commercial deal with a customer | `company`, `stage`, `value`, `monthly_revenue`, `projected_value`, `contract_expiry`, `launch_brand`, `owner`, `account_id`. |
 | `activity` | A deal stage change | `deal_id`, `from_stage`, `to_stage`. Deal history. |
 | `mlr_assets` | An asset tracked commercially against a deal | `deal_id`, `asset_type`, `veeva_job_code`, `review_cycles`, `approval_date`. |
@@ -40,9 +40,9 @@ day by a sync job. One row per request. Columns: `tenant_slug` (the customer ten
 - For platform request status (pending, completed, dismissed) the tenant connection is the
   source of truth. The CRM sync only includes requests from live operations and excludes
   assets whose name or folder starts with `#TEST`.
-- Join to accounts and deals by company name: `request_drafts.tenant_slug` corresponds to
-  the customer, and `deals.company` or `accounts.name` carries the customer name. Names
-  may differ in case or spelling from the slug; match loosely.
+- Join to accounts on `request_drafts.tenant_slug = accounts.tenant_slug`, then to deals on
+  `deals.account_id = accounts.id`. Fall back to matching `deals.company` to `accounts.name`
+  only for deals with no `account_id`. Do not match tenant slugs to company names by text.
 - Data is up to 24 hours behind the platform.
 
 ## Not available here

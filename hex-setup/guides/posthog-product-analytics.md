@@ -13,13 +13,15 @@ engagement, adoption, and behaviour. Data is about one hour behind and starts 3 
 
 | Table | What it holds | Notes |
 |---|---|---|
-| `posthog_events` | One row per event | Partitioned by `dt` (yyyy-MM-dd). Always filter on `dt`. |
+| `posthog_events_flat` | One row per event with the useful fields already extracted as columns | Prefer this over the raw table. Columns: `tenant`, `brand_id`, `asset_id`, `url`, `tenant_from_url`, `content_kind`, `is_admin`, `admin_request_id`, `request_type`, `request_status`, `bypass_mlr`, `qc_override`, `email`, `person_name`, `is_internal`, `is_bookkeeping`, plus raw `properties`. Filter on `dt`. |
+| `posthog_daily_asset_activity` | One row per day, tenant, brand, asset with counts of opens, edits, request views, publishes, exports, and distinct people | Internal staff and bookkeeping events already excluded. Best starting point for usage-per-asset and usage-per-customer questions. |
+| `posthog_events` | Raw export, one row per event | Use only when a property is not exposed by the flat view. `properties` is a JSON string. |
 | `posthog_persons_latest` | One row per person, latest version | Use this, not the raw `posthog_persons` table, for people. |
 | `posthog_persons` | Raw person export with update history | Timestamps are epoch seconds; prefer the view above. |
 
-Columns on `posthog_events`: `uuid`, `event`, `distinct_id`, `person_id`, `properties`
-(JSON string), `person_properties` (JSON string), `elements_chain`, `timestamp`, `dt`.
-Read JSON with `json_extract_scalar(properties, '$.operation_id')`.
+Standard filters on the flat view: `NOT is_internal AND NOT is_bookkeeping`. If you need a
+property that is not a column, read it from `properties` with
+`json_extract_scalar(properties, '$.some_key')`.
 
 ## Events and what they mean
 
@@ -53,9 +55,9 @@ Read JSON with `json_extract_scalar(properties, '$.operation_id')`.
 Athena cannot join to the tenant databases or the CRM directly. To combine, pull a
 filtered result from each side and join in a notebook.
 
-- Asset: `properties.operation_id` in PostHog equals `n_cg_operations.id` in the tenant
-  database, and the asset id in `/home/assets/<id>` URLs.
-- Brand: `$groups.brand` equals `brands.id` in the tenant database.
-- Tenant: `$groups.tenant` or the person's `tenant` equals the tenant slug, the database
-  name, and `request_drafts.tenant_slug` in the CRM.
-- User: person `email` equals `users.email` in the tenant database.
+- Asset: `asset_id` (flat view) equals `n_cg_operations.id` in the tenant database and the
+  asset id in `/home/assets/<id>` URLs.
+- Brand: `brand_id` equals `brands.id` in the tenant database.
+- Tenant: `tenant` equals the tenant slug, the tenant database name, `request_drafts.tenant_slug`
+  and `accounts.tenant_slug` in the CRM.
+- User: `email` equals `users.email` in the tenant database.

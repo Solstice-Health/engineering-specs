@@ -14,8 +14,9 @@ review, and publish them. Each customer runs in its own tenant.
 - One Postgres database per customer. In Hex each is a separate connection named
   `Prod - <tenant>` (for example `Prod - phathom`). The tenant slug is the database name.
 - All connections point at the production read replica and are read-only.
-- Names ending in `_sandbox` (`phathom_sandbox`, `takeda_sandbox`) and `testing_demo` are
-  not real customer activity. Exclude them unless the question is about testing.
+- Any tenant slug ending in `_sandbox` (`phathom_sandbox`, `takeda_sandbox`, and in PostHog also
+  `alexion_sandbox`) and `testing_demo` are not real customer activity. Exclude them unless the
+  question is about testing.
 - Real customer tenants: abbvie, akebia, alexion, ardelyx, argenx, astrazeneca, incyte,
   ipsen, novocure, nuvationbio, pfizer, phathom, priovant, real_chemistry, sanofi,
   stemline, teva, ucb.
