@@ -18,6 +18,8 @@ Questions about the business need three systems today: the customer tenant datab
 
 ## 2. What exists today
 
+Operational material for this system (runbooks, guide sources, lake definitions, governance script) lives in the private repository `Solstice-Health/analytics-platform`; this plan is the design record.
+
 - **Tenant databases.** One Postgres database per customer on `solstice-prod` (RDS), with a read replica `solstice-prod-read-replica`. Engineers reach them through the bastion `solstice-bastion` and an SSH tunnel (Backend-Server `docker-compose.yml`, `documentation/01-ONBOARDING.md`). Schema reference: Backend-Server `documentation/04-DATABASE-MODELS.md`. Key tables: `n_cg_operations` (assets), `admin_requests` (review requests), `n_cg_operation_qc_results` (MLR reports), `brands`, `users`, `projects`.
 - **CRM sync.** `solstice-crm/infra/lambda-request-sync` discovers tenant databases nightly from `pg_database`, reads request metadata as the least-privilege role `crm_sync_ro`, and upserts into Supabase `request_drafts`. It is the existing pattern for "a job in the VPC that reads every tenant", and this plan reuses it twice.
 - **PostHog.** Project "Solstice - PROD" (id 589053). The frontend (`Solstice-Frontend/lib/analytics/posthog.ts`) identifies persons with email, tenant slug and an `is_internal` flag, and sets group `tenant` (slug) and `brand` (brand id). Events carry `operation_id`, the asset id. About 35,000 events a month.
@@ -172,7 +174,7 @@ Non-goals: writing back to any source from Hex; replacing Datadog for operationa
 | 3 | CRM `hex_ro` and Hex connection; four guides; reference repos | Shipped 2026-09-13 |
 | 3b | `platform_tenants` registry and `accounts.tenant_slug` (solstice-crm#64); onboarding grants script (Backend-Server#1285) | PRs open |
 | 4 | Nightly Lambda copies four tenant tables per tenant into the lake with a `tenant` column; Glue tables; cross-customer SQL in one connection | Not started; triggered by repeated cross-customer questions |
-| 5 | Hex access group and sensitivity labels (`09_hex_governance.py`), seats | Deferred while two evaluators |
+| 5 | Hex access group and sensitivity labels (analytics-platform `hex/governance.py`), seats | Deferred while two evaluators |
 
 Rollout order for 3b: merge the CRM PR (migration applies by GitHub Action); run `onboard_all_tenants.sh` on prod so `crm_sync_ro` can read `companies`; redeploy the Lambda; check `accounts_linked`; link leftovers from the Accounts page. Backout: the migration is additive; disabling the Lambda's registry step is one try block.
 
