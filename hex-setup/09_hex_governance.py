@@ -10,7 +10,6 @@ What it does
   2. For every Prod - <tenant>, CRM (Supabase) and Analytics lake (Athena) connection:
        - sharing: workspace members NONE, guests NONE, public NONE; the group gets QUERY
        - description: one sentence saying what it is and when to use it
-       - schemaFilters (tenant connections only): hide plumbing tables from the agent
   The [Demo] connection is left alone.
 """
 import json, os, sys, urllib.request, urllib.error
@@ -21,14 +20,8 @@ API = "https://app.hex.tech/api/v1"
 GROUP_NAME = "Customer data access"
 EXTRA_EMAILS = [e.strip().lower() for e in os.environ.get("HEX_GROUP_EMAILS", "aris@solsticehealth.co").split(",") if e.strip()]
 
-HIDE_TABLES = [  # Mirrors the REVOKE list in 03_grant_tenant_db.sql / Backend-Server onboard_tenant.sql.
-    # Schema filters only hide objects in Hex's UI; the database REVOKE is the access control.
-    "chat_messages", "n_cg_operation_html_versions", "prompt_registry", "integrations",
-    "header_footer_library", "template_library", "design_library", "social_scraped_assets",
-    "veeva_annotations", "claim_studio_sessions", "brand_pipeline_overrides",
-    "notifications", "user_notifications", "n_cg_operation_processing_times",
-    "file_processing_times", "file_pages", "alembic_version",
-]
+# Table access is enforced in the database (allowlist in Backend-Server onboard_tenant.sql);
+# Hex schema filters are not used so the agent sees exactly what hex_ro can read.
 
 def call(method, path, body=None):
     req = urllib.request.Request(API + path, method=method,
@@ -93,11 +86,9 @@ for c in conns:
         "sharing": {"workspace": {"members": "NONE", "guests": "NONE", "public": "NONE"},
                     "groups": [{"group": {"id": group["id"] if group else "<new group>"}, "access": "QUERY"}]},
     }
-    if name.startswith("Prod - "):
-        patch["schemaFilters"] = {"tables": {"exclude": {"matchType": "REGEX", "values": [rf"(^|\.){t}$" for t in HIDE_TABLES]}}}
     cur = c.get("sharing", {}).get("workspace", {})
     print(f"patch {name}: public {cur.get('public')}->NONE, members {cur.get('members')}->NONE (group QUERY)"
-          + (", hide %d tables" % len(HIDE_TABLES) if "schemaFilters" in patch else ""))
+)
     if APPLY:
         call("PATCH", f"/data-connections/{c['id']}", patch)
 

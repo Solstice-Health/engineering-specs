@@ -24,7 +24,7 @@ apply the standard exclusions. If the question needs a different definition, say
 excluding bookkeeping events `$identify`, `$set`, `$groupidentify`, `$pageleave`.
 Weekly active users use a Monday to Sunday week.
 
-**Assets created** (tenant DB). Rows in `n_cg_operations` with `parent_id IS NULL` and
+**Assets created** (tenant DB). Rows in `analytics.assets` with `parent_id IS NULL` and
 `page = 1`, counted by `created_at`. Versions and additional pages of the same asset are
 not new assets. Break down by `content_type` when asked for mix.
 
@@ -48,7 +48,7 @@ reason is in `request_metadata -> 'dismissal' ->> 'category'`.
 `cg_operation_id` where `request_type` starts with `change_request`.
 
 **MLR reports generated** (tenant DB). Distinct `operation_id` in
-`n_cg_operation_qc_results` where `mlr_review IS NOT NULL`. This is the automated MLR
+`analytics.mlr_reviews` where `has_mlr_review`. This is the automated MLR
 review, not a human submission. Do not use `marketing_files.is_reviewed` for anything
 MLR related.
 

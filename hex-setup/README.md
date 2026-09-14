@@ -37,12 +37,13 @@ HEX_TOKEN=hxtw_... python3 09_hex_governance.py          # dry run
 HEX_TOKEN=hxtw_... python3 09_hex_governance.py --apply
 ```
 
-**Sensitive tables.** `hex_ro` is granted SELECT on all tables and then REVOKED on the tables that
-hold content bodies, chat transcripts, prompt and template configuration, and plumbing (the list in
-`03_grant_tenant_db.sql`, identical to Backend-Server `onboard_tenant.sql` and to `HIDE_TABLES` in
-`09_hex_governance.py`). The database revoke is the access control; Hex schema filters only hide
-objects in the UI. When a new sensitive table is added, add it to both lists and re-run the
-onboarding script on every tenant.
+**What Hex can read in a tenant.** An allowlist, enforced in the database by Backend-Server
+`scripts/tenant_onboarding/onboard_tenant.sql`: the metadata tables `companies`, `users`, `brands`,
+`brand_team_members`, `projects`, `admin_requests`, `marketing_files`, `prior_approved_files`, plus
+two content-free views, `analytics.assets` (assets without prompt, messages, HTML, chat history or
+source material) and `analytics.mlr_reviews` (MLR results as counts and flags). Nothing else is
+granted; generated content and chat transcripts are unreachable. To expose a new table, add it to
+the allowlist in that script and re-run it on every tenant. Hex schema filters are not used.
 
 **Rotate `hex_ro`.** `alter role hex_ro with password '...'` on the prod primary (replicates to the
 replica) and on Supabase, then update the password in each Hex connection. No other credential
@@ -54,10 +55,10 @@ exists: Hex reaches Athena and PostHog reaches S3 by assuming roles.
 |---|---|---|
 | `01_bastion_add_hex_user.sh` | Creates the restricted `hex` OS user on the bastion from Hex's workspace SSH key (Hex: Settings, Data sources, bottom of page) | bastion |
 | `02_hex_ro_role.sql` | Creates `hex_ro` on the RDS cluster with timeouts and read-only transactions | prod primary |
-| `03_grant_tenant_db.sql`, `04_grant_all_tenant_dbs.sh` | Per-tenant grants for `hex_ro` (superseded by Backend-Server `scripts/tenant_onboarding`, kept for reference) | prod primary via tunnel |
+| `03_grant_tenant_db.sql`, `04_grant_all_tenant_dbs.sh` | Pointers only; the maintained grant script is Backend-Server `scripts/tenant_onboarding` | prod primary via tunnel |
 | `07_supabase_crm_hex_ro.sql` | `hex_ro` on the CRM with RLS select policies; no password in the file, set it out of band. To be turned into a CRM migration | Supabase |
 | `08_upload_hex_guides.sh` | Publishes `guides/*.md` to Hex through the guides API | laptop |
-| `09_hex_governance.py` | Access group, sharing lockdown, connection descriptions, hidden plumbing tables | laptop |
+| `09_hex_governance.py` | Access group, sharing lockdown, connection descriptions | laptop |
 | `guides/` | Source of truth for the four Hex guides: platform data model, PostHog analytics, CRM, core metrics | |
 
 ## AWS resources (account 432113314921, us-east-1)

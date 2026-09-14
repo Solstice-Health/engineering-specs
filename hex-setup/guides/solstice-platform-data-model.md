@@ -33,16 +33,15 @@ review, and publish them. Each customer runs in its own tenant.
 | `users` | A person with a login | `email`, `name`, `company_id`. Solstice staff appear here too. |
 | `brand_team_members` | Which users belong to which brand and their role | Join `users` to `brands`. |
 | `projects` | A folder that organises assets for a brand | Unique on `(brand_id, name)`. |
-| `n_cg_operations` | An asset: one generated piece of content and its editing history | This is what users call an asset. See below. |
+| `analytics.assets` | An asset: one generated piece of content, one row per version/page | This is what users call an asset. A view over `n_cg_operations` without its content columns; the base table is not readable. See below. |
 | `admin_requests` | A request: a unit of work in the admin review queue | See below. This is the table for "pending requests". |
-| `n_cg_operation_qc_results` | The MLR review report for one version of an asset | JSON in `mlr_review`. One row per `(operation_id, version_number)`. |
-| `n_cg_operation_html_versions` | Saved HTML versions of an asset | Version history. |
+| `analytics.mlr_reviews` | One automated MLR review run for an asset version | Counts and flags only (`has_mlr_review`, `findings_count`, `consolidated_findings_count`, `report_id`); the report payload is not readable. |
 | `marketing_files` | Files uploaded for review (older upload-based flow) | Different flow from assets. |
 
 Soft deletes: most tables have `deleted_at`. Always add `deleted_at IS NULL` unless the
 question is about deleted records.
 
-## Assets (`n_cg_operations`)
+## Assets (`analytics.assets`)
 
 - One row per asset. `content_type` says what kind: `email`, `banner`, `slide`,
   `file_editor`, `trifold`, `onepager`, `webpage`, `other`.
@@ -54,10 +53,13 @@ question is about deleted records.
 - `version_number` and `parent_id` link versions of the same asset. `page` and
   `page_root_id` link pages of a multi-page asset. To count distinct assets, count rows
   where `parent_id IS NULL` or count distinct `page_root_id`/`id` depending on the question.
-- `project_id` places the asset in a folder. `folder_path` is deprecated.
+- `project_id` places the asset in a folder.
 - `brand_id` and `user_id` say which brand the asset belongs to and who created it.
 - The asset id appears in product URLs as `/home/assets/<id>` and in PostHog events as the
   `operation_id` property.
+- Not readable from Hex, by design: asset content and HTML, chat transcripts, prompts,
+  templates, claims and clinical files, guideline results, Veeva documents. If a question
+  needs them, say so rather than guessing at a table name.
 
 ## Requests (`admin_requests`)
 
@@ -81,9 +83,9 @@ This is the right table for review workload, backlog, and turnaround questions.
 ## MLR review
 
 MLR stands for medical, legal, and regulatory review. In Solstice the automated MLR
-review report for an asset version lives in `n_cg_operation_qc_results.mlr_review`
-(JSON with `findings`, `consolidated`, `claim_audits`, `feedback`). Severity labels in the
-product are Required, Recommended, Advisory. Count MLR reviews from this table, not from
+review for an asset version is one row in `analytics.mlr_reviews` (join `operation_id` to
+`analytics.assets.id`). `findings_count` and `consolidated_findings_count` size the report;
+the report text itself is not available in Hex. Count MLR reviews from this view, not from
 `marketing_files.is_reviewed`.
 
 ## Things that are easy to get wrong
@@ -91,7 +93,7 @@ product are Required, Recommended, Advisory. Count MLR reviews from this table, 
 - `marketing_files.is_reviewed` only means someone opened the file in the document viewer
   and saved it. It is set to true on save and never reset. It is not an MLR submission or
   an approval. Label any metric built on it as "files saved in the viewer".
-- `n_cg_operations.status = 'completed'` means generation finished, not that the asset was
+- `analytics.assets.status = 'completed'` means generation finished, not that the asset was
   approved or published. Publishing is visible as `admin_requests.status = 'completed'`
   for the asset's requests.
 - Timestamps are UTC.
