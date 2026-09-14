@@ -55,7 +55,7 @@ property that is not a column, read it from `properties` with
 Athena cannot join to the tenant databases or the CRM directly. To combine, pull a
 filtered result from each side and join in a notebook.
 
-- Asset: `asset_id` (flat view) equals `n_cg_operations.id` in the tenant database and the
+- Asset: `asset_id` (flat view) equals `analytics.assets.id` in the tenant database and the
   asset id in `/home/assets/<id>` URLs.
 - Brand: `brand_id` equals `brands.id` in the tenant database.
 - Tenant: `tenant` equals the tenant slug, the tenant database name, `request_drafts.tenant_slug`

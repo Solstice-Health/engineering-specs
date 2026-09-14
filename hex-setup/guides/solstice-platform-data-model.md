@@ -1,6 +1,6 @@
 ---
 name: "Solstice platform data model"
-description: "How to read the per-tenant Prod databases: tenants, brands, users, assets (n_cg_operations), review requests (admin_requests), MLR results, status values, soft deletes, and known traps such as marketing_files.is_reviewed."
+description: "How to read the per-tenant Prod databases: tenants, brands, users, assets (analytics.assets), review requests (admin_requests), MLR results, status values, soft deletes, and known traps such as marketing_files.is_reviewed."
 ---
 
 # Solstice platform data model (the `Prod - <tenant>` connections)
@@ -77,7 +77,7 @@ This is the right table for review workload, backlog, and turnaround questions.
 - `assigned_to` is a JSON snapshot `{user_id, name, email}` taken when the request was
   created and is not updated later.
 - Denormalised for convenience: `brand_id`, `display_name`, `project_name`.
-- Join to the asset via `cg_operation_id = n_cg_operations.id`; to the requester via
+- Join to the asset via `cg_operation_id = analytics.assets.id`; to the requester via
   `requester_user_id = users.id`; to the resolver via `resolved_by_user_id`.
 
 ## MLR review
