@@ -1,0 +1,4 @@
+# Codex local setup (machine-specific, do not commit)
+.codex/
+.agents/
+AGENTS.md
