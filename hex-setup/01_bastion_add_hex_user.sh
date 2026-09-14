@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Run ON the bastion (ec2-user@100.48.197.203). Creates a locked-down "hex" OS user
+# Run ON the bastion (ec2-user@<bastion public IP, see AWS console>). Creates a locked-down "hex" OS user
 # that can ONLY port-forward to the prod read replica on 5432. No shell, no pty.
 #
-#   scp -i ~/.ssh/solstice-bastion.pem 01_bastion_add_hex_user.sh ec2-user@100.48.197.203:/tmp/
-#   ssh -i ~/.ssh/solstice-bastion.pem ec2-user@100.48.197.203 \
+#   scp -i ~/.ssh/solstice-bastion.pem 01_bastion_add_hex_user.sh ec2-user@<bastion public IP, see AWS console>:/tmp/
+#   ssh -i ~/.ssh/solstice-bastion.pem ec2-user@<bastion public IP, see AWS console> \
 #       'bash /tmp/01_bastion_add_hex_user.sh "<HEX WORKSPACE SSH PUBLIC KEY>"'
 #
 # The public key is in Hex: Settings -> Data sources -> bottom of page under "Workspace".
@@ -27,4 +27,4 @@ if ! sudo grep -q "^Match User hex" /etc/ssh/sshd_config; then
     | sudo tee -a /etc/ssh/sshd_config >/dev/null
   sudo sshd -t && sudo systemctl reload sshd
 fi
-echo "OK. In Hex use SSH host 100.48.197.203, port 22, user hex."
+echo "OK. In Hex use SSH host <bastion public IP, see AWS console>, port 22, user hex."

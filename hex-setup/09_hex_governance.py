@@ -21,13 +21,13 @@ API = "https://app.hex.tech/api/v1"
 GROUP_NAME = "Customer data access"
 EXTRA_EMAILS = [e.strip().lower() for e in os.environ.get("HEX_GROUP_EMAILS", "aris@solsticehealth.co").split(",") if e.strip()]
 
-HIDE_TABLES = [  # plumbing, queues, blobs, and prompt/config tables the agent should not query
-    "alembic_version", "notifications", "user_notifications", "notification_trigger",
-    "user_notification_trigger", "chat_messages", "n_cg_operation_html_versions",
-    "n_cg_operation_processing_times", "file_processing_times", "file_pages",
-    "prompt_registry", "integrations", "header_footer_library", "template_library",
-    "design_library", "social_scraped_assets", "veeva_annotations", "claim_studio_sessions",
-    "brand_pipeline_overrides",
+HIDE_TABLES = [  # Mirrors the REVOKE list in 03_grant_tenant_db.sql / Backend-Server onboard_tenant.sql.
+    # Schema filters only hide objects in Hex's UI; the database REVOKE is the access control.
+    "chat_messages", "n_cg_operation_html_versions", "prompt_registry", "integrations",
+    "header_footer_library", "template_library", "design_library", "social_scraped_assets",
+    "veeva_annotations", "claim_studio_sessions", "brand_pipeline_overrides",
+    "notifications", "user_notifications", "n_cg_operation_processing_times",
+    "file_processing_times", "file_pages", "alembic_version",
 ]
 
 def call(method, path, body=None):

@@ -1,5 +1,12 @@
 -- Hex read-only access to the Solstice CRM (Supabase project jqddeitfzorljqmldany).
--- Run in the Supabase dashboard SQL editor as the default postgres user. Idempotent.
+-- Idempotent. Applied 2026-09-13 by hand; to be re-expressed as a CRM migration.
+--
+-- NO PASSWORD IN THIS FILE. The role is created without one (so it cannot log in), and
+-- the password is set once, out of band, with a generated value that is never committed:
+--
+--   alter role hex_ro with password '<openssl rand -hex 24>';
+--
+-- Re-running this file refreshes grants and policies and leaves the password untouched.
 --
 -- Exposes the business tables only. Access-control tables (profiles, allowed_emails,
 -- page_access, page_data_access) stay hidden. RLS is on for these tables, so a plain
@@ -12,9 +19,6 @@ begin
       noreplication connection limit 10;
   end if;
 end $$;
-
--- Replace the placeholder before running. Generate with: openssl rand -hex 24
-alter role hex_ro with password 'REPLACE_WITH_GENERATED_PASSWORD';
 
 alter role hex_ro set statement_timeout = '120s';
 alter role hex_ro set idle_in_transaction_session_timeout = '60s';
@@ -38,8 +42,9 @@ begin
   end loop;
 end $$;
 
--- Verify: should list the seven tables with SELECT for hex_ro.
+-- Verify: the seven tables with SELECT for hex_ro, and that the role has a password set.
 select table_name, privilege_type
 from information_schema.role_table_grants
 where grantee = 'hex_ro' and table_schema = 'public'
 order by table_name;
+select rolname, rolpassword is not null as has_password from pg_authid where rolname = 'hex_ro';

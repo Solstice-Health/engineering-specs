@@ -2,13 +2,14 @@
 
 Companion to the plan [SOL-XXXX: Analytics lake and Hex](../plans/SOL-XXXX-analytics-lake-hex.md),
 which explains the design. This folder holds the scripts and guide sources needed to
-operate it. Built 2026-09-13.
+operate it. Built 2026-09-13. This repository is public: no passwords, keys, external ids, or
+host addresses belong in it; the runbook points at where they live instead.
 
 ## What is connected
 
 | Hex connection | Source | Path | Access |
 |---|---|---|---|
-| `Prod - <tenant>` (21) | Tenant databases on `solstice-prod-read-replica` | SSH tunnel through `solstice-bastion` (100.48.197.203) as OS user `hex` | DB role `hex_ro`, SELECT only |
+| `Prod - <tenant>` (21) | Tenant databases on `solstice-prod-read-replica` | SSH tunnel through `solstice-bastion` (<bastion public IP, see AWS console>) as OS user `hex` | DB role `hex_ro`, SELECT only |
 | `Analytics lake (Athena)` | PostHog PROD events and persons, hourly Parquet in `s3://solstice-analytics-lake/posthog/` | Athena workgroup `solstice-analytics`, Glue db `solstice_analytics` | Hex assumes IAM role `hex-athena` (external id) |
 | `CRM (Supabase)` | Solstice CRM, project `jqddeitfzorljqmldany` | Session pooler `aws-1-us-west-2.pooler.supabase.com:5432` | DB role `hex_ro`, SELECT + RLS policies on 7 tables |
 
@@ -36,6 +37,13 @@ HEX_TOKEN=hxtw_... python3 09_hex_governance.py          # dry run
 HEX_TOKEN=hxtw_... python3 09_hex_governance.py --apply
 ```
 
+**Sensitive tables.** `hex_ro` is granted SELECT on all tables and then REVOKED on the tables that
+hold content bodies, chat transcripts, prompt and template configuration, and plumbing (the list in
+`03_grant_tenant_db.sql`, identical to Backend-Server `onboard_tenant.sql` and to `HIDE_TABLES` in
+`09_hex_governance.py`). The database revoke is the access control; Hex schema filters only hide
+objects in the UI. When a new sensitive table is added, add it to both lists and re-run the
+onboarding script on every tenant.
+
 **Rotate `hex_ro`.** `alter role hex_ro with password '...'` on the prod primary (replicates to the
 replica) and on Supabase, then update the password in each Hex connection. No other credential
 exists: Hex reaches Athena and PostHog reaches S3 by assuming roles.
@@ -47,7 +55,7 @@ exists: Hex reaches Athena and PostHog reaches S3 by assuming roles.
 | `01_bastion_add_hex_user.sh` | Creates the restricted `hex` OS user on the bastion from Hex's workspace SSH key (Hex: Settings, Data sources, bottom of page) | bastion |
 | `02_hex_ro_role.sql` | Creates `hex_ro` on the RDS cluster with timeouts and read-only transactions | prod primary |
 | `03_grant_tenant_db.sql`, `04_grant_all_tenant_dbs.sh` | Per-tenant grants for `hex_ro` (superseded by Backend-Server `scripts/tenant_onboarding`, kept for reference) | prod primary via tunnel |
-| `07_supabase_crm_hex_ro.sql` | `hex_ro` on the CRM with RLS select policies. To be turned into a CRM migration | Supabase |
+| `07_supabase_crm_hex_ro.sql` | `hex_ro` on the CRM with RLS select policies; no password in the file, set it out of band. To be turned into a CRM migration | Supabase |
 | `08_upload_hex_guides.sh` | Publishes `guides/*.md` to Hex through the guides API | laptop |
 | `09_hex_governance.py` | Access group, sharing lockdown, connection descriptions, hidden plumbing tables | laptop |
 | `guides/` | Source of truth for the four Hex guides: platform data model, PostHog analytics, CRM, core metrics | |
@@ -56,7 +64,7 @@ exists: Hex reaches Athena and PostHog reaches S3 by assuming roles.
 
 S3 `solstice-analytics-lake` (SSE-S3, TLS only, public access blocked; `athena-results/` expires after
 30 days). IAM roles `posthog-batch-exports` (trusted by PostHog US with external id
-`posthog-01a05dc5-662f-0000-24f4-a94174f8361a`, write-only under `posthog/`) and `hex-athena`
+`<external id shown in PostHog when creating the S3 connection>`, write-only under `posthog/`) and `hex-athena`
 (trusted by Hex's Athena role with Hex's external id, read-only). Glue tables `posthog_events`,
 `posthog_persons`; views `posthog_persons_latest`, `posthog_events_flat`,
 `posthog_daily_asset_activity`. Athena workgroup `solstice-analytics`, 10 GB scan cap per query.
