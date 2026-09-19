@@ -465,6 +465,15 @@ But it is not a pure deletion. The local write path also serves PDF and source, 
 - **Four MCP commits reached the shared `dev` branch** without review, pushed by an IDE sync rather than deliberately: the branch tracked `dev` rather than a branch of its own. Reverted on `dev`, and the feature branch was rebuilt on top of the revert — its commits were still in `dev`'s history, so a PR from it would have shown an empty diff and merged as a no-op. Every branch now tracks its own remote.
 - **#1305 merged mid-implementation.** The backend branch was stacked on it and was rebased onto `dev`, so PR 1 contains only this ticket's work.
 
+### The machine credential is a placeholder
+
+Decided deliberately, and all of it is meant to be replaced.
+
+- **The ideal shape is an RFC 8693 on-behalf-of exchange in the MCP.** Auth0 documents it for exactly this case: the MCP presents the user's access token as `subject_token` and gets one back carrying the user's `sub`, an `act` claim naming the MCP, and the backend's audience. That deletes the actor field, the revalidation, the credential-first branch, and most of `machine_actor.py` — the PRC routes go back under the manifest's ordinary Auth0 gate. It was judged too large for this ticket and gets its own PRs.
+- **Until then the credential is a bearer of "may act for any user in any tenant."** Audience and scope bound which *routes* it reaches, never which *people* it may name. What contains it is that it never leaves the MCP process, that the actor it names is revalidated against the tenant's users rather than trusted, and that write intent is derived from that user's brand role.
+- **No second audience was introduced.** The PRC plane shares `AUTH0_M2M_MEMORY_AUDIENCE` — one machine plane, one Auth0 resource server — and is separated from memory by the pinned `prc:write` scope alone. The setting's name is now wrong and knowingly left alone: renaming a live variable to serve a mechanism we intend to delete is churn. The scope, not the audience, is the boundary, which makes "every machine route pins a scope" structural rather than incidental.
+- **The actor travels in the request body as `actor_sub`**, the property the memory plane already uses, rather than a PRC-specific header. Memory can do that safely because its M2M routes are a separate tree; ours serve the app and the MCP on one route, so the field is optional in the schema and a person's bearer carrying one is refused rather than ignored. Publish gained a request body solely to carry it — it had none, and the app still publishes through the legacy route, so nothing else was affected.
+
 ### The rules move, as built
 
 - **The rules endpoint authenticates but authorizes nothing, and is exempt from tenant resolution.** It had to be. The payload is one static document, identical for every tenant and brand, and the MCP asks for rules before it knows which tenant it is authoring for — so requiring `X-Tenant-Slug` would have meant giving `solstice_prc_template_rules` a tenant argument it has no way to fill. Its dependency verifies either credential and stops there.
