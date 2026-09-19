@@ -1,4 +1,6 @@
+# SOL-3322: Banner compatibility agent v1
 
+**Ticket:** [SOL-3322](https://linear.app/solsticehealth/issue/SOL-3322)
 
 ## Checklist
 
