@@ -194,7 +194,7 @@ Export paths fail closed. The interactive view does not — the worst out-of-con
 
 ## The contract itself
 
-Stated once, in `Backend-Server/src_v2/prc_contract/references/renderer-contract.md`,
+Stated once, in `Backend-Server/src_v2/prc_templates/references/renderer-contract.md`,
 beside the validator that enforces it and served by
 `GET /api/v2/prc-template-rules`. Each rule there is marked `backend`, `engine`,
 or `advisory`, so it also answers what actually rejects a save.
@@ -221,6 +221,6 @@ records.
 ## Companions
 
 - Local corpus: `STRUCTURE.md`, `buckets.json`, `paired/fixtures.json`, `CONTRACT.md`
-- Authoring contract: `Backend-Server/src_v2/prc_contract/references/renderer-contract.md`
+- Authoring contract: `Backend-Server/src_v2/prc_templates/references/renderer-contract.md`
 - Pressure suite: `tests/unit/components/content-workspace/prc-template/prc-corpus.test.ts`
 - Editorial HTML (local, richer viz): `Solstice-Frontend/tests/corpus/prc-templates/structure-explainer.html`

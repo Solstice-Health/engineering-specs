@@ -16,7 +16,7 @@
 > - [ ] Schema migration on existing tables
 > - [x] New external dependency or infrastructure — a new Auth0 resource server, and a token-exchange grant we do not use today
 > - [x] Changes a cross-service or client-facing API contract — the internal memory route surface is deleted and shared DTOs lose fields
-> - [ ] Hard to reverse: every step before the deletion is flag-gated or additive; the deletion itself is a code revert
+> - [ ] Hard to reverse: dual acceptance lands before anything moves, so the frontend flip reverts by environment variable and the cutover reverts by flag; only the final deletions need a deploy to undo
 
 ## 1. Problem
 
@@ -49,9 +49,23 @@ Move the actor from the request body into the JWT, then delete everything that e
 1. **Register a Backend API resource server** — `https://api.solsticehealth.co` — with real scopes, and have `Auth0JWTBearer` accept it *alongside* the audience it accepts today.
 2. **Teach MCP to exchange** the verified end-user token for a Backend-audience user token, cached per subject.
 3. **Point the memory client at the public routes**, behind a flag.
-4. **Delete the internal plane** — `internal_routes.py`, the optional actor fields, the 400 guard, and the memory M2M audience — once the flag has soaked.
+4. **Move the frontend onto the new audience**, then delete what is left — `internal_routes.py`, the optional actor fields, the 400 guard, the memory M2M audience, and the Management API audience.
 
-**The frontend does not move in this ticket.** Dual audience acceptance is the resting state, not a migration window: the frontend keeps minting `…/api/v2/` tokens and keeps hitting the same routes, while MCP arrives at those routes with the new audience. Nothing about the frontend's credential changes, so the one genuinely backwards-incompatible step available here simply isn't taken. Retiring the Management API audience is a follow-up ticket with its own risk budget — see Non-goals.
+**Dual acceptance is what makes every step revertible.** It lands first and stays live throughout, so the frontend flip is an environment variable rather than a coordinated cutover, and a token minted under either audience keeps working while it does. Nothing is backwards-incompatible at any point; the plan is additive until the final deletions, and those only remove paths that are provably unused by then.
+
+**The frontend flip moves two clients, not one.** `AUTH0_AUDIENCE` is read by both `lib/auth0.ts` (the shared tenant frontend client) and `lib/review-auth.ts` (the guest review-links client, `AUTH0_REVIEW_CLIENT_ID`, deliberately separate so guest sign-in does not ride the production application). They flip together off one variable, so the resource server must grant both or guest review sign-in breaks at the flip.
+
+### What end users see at the flip
+
+Nothing, if the resource server is configured correctly — and in no case is there a repeating prompt. Auth0 consent is recorded per `(user, client, audience, scope)` and remembered, so the worst case is one prompt per user, once, not one per login.
+
+**Copy two settings from `auth0_resource_server.mcp`, not just its shape.** `skip_consent_for_verifiable_first_party_clients = true` suppresses the prompt entirely, but only for a client marked `is_first_party` whose callbacks are *verifiable* — https, not localhost. Every client in that Terraform sets `is_first_party = true`; the frontend clients must too.
+
+**Local development is the exception.** `http://localhost` callbacks cannot be verified, so each developer sees the consent screen once per audience after the flip. Expected, not a defect; worth a note in the rollout announcement so it is not reported as one.
+
+**Guest review sign-in shows no consent at all** — it is a direct grant (`grant_type: http://auth0.com/oauth/grant-type/passwordless/otp`) straight to `/oauth/token`, with no browser in the loop. Its risk is the opposite and sharper: `auth0_resource_server.mcp` sets `subject_type_authorization { user { policy = "require_client_grant" } }`, and under that policy a **user** token for the audience requires an explicit client grant. Copying the block without granting `AUTH0_REVIEW_CLIENT_ID` does not produce a prompt — it produces a rejected token request, on the one path no main-flow smoke test exercises.
+
+**Nobody is logged out.** Refresh tokens are bound to the audience they were issued for, so sessions established before the flip keep minting old-audience access tokens until they end naturally, and dual acceptance keeps those working. Users move to the new audience at their next fresh login. There is no forced re-authentication and no timing to coordinate — which is what makes this an environment variable rather than a cutover.
 
 M2M stays exactly where the caller really is a machine: the Auth0 Management calls behind `user_admin`, which have no human actor at all.
 
@@ -69,7 +83,7 @@ The exchange input is the verified token from `require_access_token()`, never a 
 
 ### Audit and rate limiting
 
-`audit.py` reads `token.subject` and `token.client_id` from the MCP-side token, which is unchanged — the exchange happens below it. Backend-side, the M2M token's `sub` (the MCP client id) stops appearing on memory calls; the audit trail moves from "machine client + asserted actor" to "user", which is a reduction in what we can see. Worth confirming Datadog's `user_id`/`user_email` facets still populate from `resolve_frontend_actor` before PR 3 deletes the old path.
+`audit.py` reads `token.subject` and `token.client_id` from the MCP-side token, which is unchanged — the exchange happens below it. Backend-side, the M2M token's `sub` (the MCP client id) stops appearing on memory calls; the audit trail moves from "machine client + asserted actor" to "user", which is a reduction in what we can see. Worth confirming Datadog's `user_id`/`user_email` facets still populate from `resolve_frontend_actor` before PR 4 deletes the old path.
 
 `rate_limit.py` is keyed on the MCP-side `(subject, client_id)` and is untouched.
 
@@ -110,30 +124,32 @@ sequenceDiagram
 
 ### Data: what changes shape
 
-*N/A because: no table changes. The shape change is at the API contract — `RememberRequest`, `SupersedeRequest` and `ForgetRequest` lose their optional `actor_sub` and `tenant_slug` fields, and `ObserveRequest` loses its required pair. Covered in Approach and PR 3.*
+*N/A because: no table changes. The shape change is at the API contract — `RememberRequest`, `SupersedeRequest` and `ForgetRequest` lose their optional `actor_sub` and `tenant_slug` fields, and `ObserveRequest` loses its required pair. Covered in Approach and PR 4.*
 
-### State: what the memory plane accepts
+### State: what the Backend accepts
 
 ```mermaid
 stateDiagram-v2
-    [*] --> M2MOnly: today — internal routes, service token + actor_sub
-    M2MOnly --> BothPaths: PR 2 merges, flag off
-    BothPaths --> ExchangeOnly: PR 3 — internal plane deleted
-    ExchangeOnly --> [*]
-    note right of BothPaths
-        Flag flips per tenant here.
-        Both paths live; either is one flag away.
+    [*] --> Today: Management audience only; MCP on the internal plane
+    Today --> BothLive: PR 1 — dual acceptance, both memory paths available
+    BothLive --> BothLive: PR 2 flips the frontend · PR 3 flips the cutover flag
+    BothLive --> Converged: PR 4 — internal plane and old audience deleted
+    Converged --> [*]
+    note right of BothLive
+        Everything reverts here.
+        Frontend: one env var.
+        MCP: one flag, per tenant.
     end note
 ```
 
-*`BothPaths` is the only state with a rollback that isn't a deploy, which is why the deletion waits for a soak rather than riding along with the cutover.*
+*`BothLive` holds both soaks concurrently and has no deadline. It is the only state whose rollback is not a deploy, which is why all four moving parts flip inside it and the deletions wait outside.*
 
 ## 5. Trade-offs accepted
 
 - We accept **a per-subject token cache and one Auth0 round-trip per cache miss** to get the actor into the credential. Revisit when exchange latency shows up in tool p95, which the existing `emit_tool_metrics` duration already reports.
 - We accept **a coarser Backend audit trail on memory calls** — the machine client id stops being recorded alongside the actor — to get one route surface. Revisit if an audit asks which machine client acted.
-- We accept **that the Backend keeps accepting the Management API audience**, so the frontend never changes credential shape and this ticket contains no backwards-incompatible step. The existing smell persists; it does not get worse. Revisit in the follow-up ticket, where it is the only change and can carry its own rollout.
-- We accept **not adding scope enforcement on user-facing routes in this ticket**, to keep the change to identity transport only. Revisit as soon as the audience exists, because that is the first time it is possible.
+- We accept **a period of dual audience acceptance** rather than a synchronized flip, to keep every step revertible without a deploy. Revisit never; the state is deliberately un-deadlined and closes when PR 4 lands.
+- We accept **not adding scope enforcement on user-facing routes in this ticket**, to keep the change to identity transport only. Revisit immediately after: PR 1 is what makes it possible for the first time, and leaving it unspent is how the audience work gets re-litigated later.
 
 ## 6. Alternatives rejected
 
@@ -144,25 +160,27 @@ stateDiagram-v2
 
 ## 7. Risks and rollback
 
-**There is no backwards-incompatible step before the deletion.** PR 1 is additive to a validator (one more accepted audience) and inert until something mints that audience. PR 2 is inert until a flag opens. PR 3 removes code that the flag has already routed around. No existing caller's credential changes at any point.
+**The frontend flip is the sharp edge, and dual acceptance is what blunts it.** It changes the credential every authenticated route sees. Because PR 1 makes the Backend accept both audiences first, the flip is revertible by environment variable with no deploy. Roll per environment, lowest first, and confirm guest review sign-in explicitly — it is the consumer most likely to be missed, since it shares the variable but not the client.
 
-**The exchange is the new single point of failure.** Every memory call now depends on an Auth0 round-trip on cache miss. An Auth0 outage previously degraded MCP at process start (one client-credentials fetch, then cached for the process); now it degrades per uncached subject. Mitigated by the cache and by the flag — a cutover that misbehaves reverts per tenant without a deploy.
+**Tokens in flight.** A token minted under the old audience stays valid for its lifetime. That is why dual acceptance must precede the flip, and must persist past the longest old-audience token lifetime before PR 4 removes it. Confirm the Management API's `token_lifetime` before scheduling PR 4; the MCP resource servers are 3600s.
+
+**The exchange is a new dependency on Auth0 in the request path.** An Auth0 outage previously degraded MCP once per process (one client-credentials fetch, then cached); now it degrades per uncached subject. Mitigated by the cache and by the flag — a cutover that misbehaves reverts per tenant without a deploy.
 
 **Tenancy.** Unchanged. `resolve_frontend_actor` resolves against the same per-tenant `users` table and returns 403 for a subject not provisioned in the routed tenant — the same cross-tenant denial `revalidate_internal_actor` gives today. `X-Tenant-Slug` and `TenantMiddleware` are untouched. No new PHI path, no new data processor.
 
-**Backout.** Before PR 3, backout is the flag — per tenant, no deploy. After PR 3 the internal routes are gone and backout is a revert of that PR: a deploy, with no data implications. This is the reason PR 3 is separate rather than bundled into the cutover.
+**Backout.** Inside `BothLive`, everything reverts without a deploy: the frontend by environment variable, the cutover by flag per tenant. Only PR 4 forfeits that, and it is a code revert with no data implications. That asymmetry is the entire reason PR 4 is separate from the flips rather than bundled with them.
 
 ## 8. Verification
 
 - **Truth-table tests on the exchange client**: cache hit, miss, expiry-with-skew, eviction at the bound, and a concurrent-miss test that asserts one fetch. Mirrors the existing `Auth0ClientCredentials` and `JWKSCache` tests.
 - **The injection invariant as a test**: the exchange input comes from `require_access_token()` and a tool argument cannot reach it.
-- **Parity tests** asserting the public and internal handlers return identical responses for the same actor, run before PR 3 deletes one of them. This is what makes the deletion a deletion rather than a behavior change.
+- **Parity tests** asserting the public and internal handlers return identical responses for the same actor, run before PR 4 deletes one of them. This is what makes the deletion a deletion rather than a behavior change.
 - **A live full-stack call** with a real exchanged token. Calling this out explicitly because SOL-3438 shipped its machine-caller path with no real credential ever exercised — its audience did not exist — and the gap was only visible in hindsight.
 - **After ship**: `mcp_auth_denied` event rate, and the `mcp_tool_audit` `duration_ms` distribution for memory tools before and after the flag opens. A cache that is not working shows up as a latency step change, not an error.
 
 ## 9. Open questions
 
-1. **`POST /observations` has no public equivalent.** It either graduates to a public route in PR 3 or becomes the last surviving internal endpoint. Decide before PR 2, because discovering it during the deletion turns a clean removal into a permanent exception.
+1. **`POST /observations` has no public equivalent.** It either graduates to a public route in PR 4 or becomes the last surviving internal endpoint. Decide before PR 3, because discovering it during the deletion turns a clean removal into a permanent exception.
 2. **Does SOL-3438 wait?** Its cutover is blocked on `AUTH0_M2M_PRC_AUDIENCE`, which does not exist. Recommendation: provision it as planned and let SOL-3438 ship on M2M, then migrate the PRC plane onto this mechanism as a follow-up. Blocking a mid-flight cutover on a platform migration is the wrong trade, even though it means briefly provisioning an audience we intend to retire.
 3. **Who owns the Auth0 tenant change?** The Terraform in PR 1 provisions a resource server; applying it is not the normal code review path and needs a named owner.
 
@@ -172,10 +190,9 @@ stateDiagram-v2
 
 ## Goals and non-goals
 
-**Goals.** A Backend API audience with real scopes. The actor in the JWT rather than the request body. One `agent_memory` route surface. M2M retained only where there is no human actor. **Three PRs, none of them backwards-incompatible.**
+**Goals.** A Backend API audience with real scopes, used by every caller including the frontend. The actor in the JWT rather than the request body. One `agent_memory` route surface. The Management API audience no longer accepted anywhere. M2M retained only where there is no human actor. **Four PRs, none of them backwards-incompatible.**
 
 **Non-goals.**
-- **Retiring the Management API audience.** The Backend accepts both; the frontend is untouched. Retiring the old one means changing the credential every authenticated route sees, which is the only backwards-incompatible move in this area — so it gets its own ticket, where it is the only change and can roll out per environment behind its own revert.
 - **The PRC plane.** Same mechanism, different ticket — see Open questions.
 - **Scope enforcement on user-facing routes.** Made possible here, spent later.
 - **Collapsing the two MCP entry paths.** Cursor and Claude Code go direct to ECS because the AgentCore gateway paginates `tools/list` and they do not follow the cursor; that is a client-capability problem, unrelated to token shape, and it does not block any of this.
@@ -187,9 +204,11 @@ One flag gates the MCP cutover, targeted by tenant, code default off, env overri
 
 No data moves, no backfill, no schema change.
 
-Ordering is strict and short: audience exists and is accepted → MCP can exchange → flag opens per tenant → internal plane deleted. Each arrow is a hard dependency, and the Terraform must be *applied*, not merely merged, before the flag opens anywhere.
+Ordering: audience exists and is accepted → the frontend flip and the MCP cutover proceed **independently and concurrently** → both soak → the deletions land together. The Terraform must be *applied*, not merely merged, before either flip.
 
-Nothing here has a deadline. `BothPaths` can hold indefinitely; the deletion is the only step that forfeits the cheap rollback, and it is gated on a soak rather than a date.
+Running the two flips concurrently is what keeps this at four PRs. They touch different callers of the same routes and neither depends on the other, so their soaks overlap; by the time the MCP flag is fully open, the frontend has been on the new audience long enough that the old-audience token lifetime has also passed. Both gates on PR 4 clear at roughly the same moment.
+
+Nothing here has a deadline. `BothLive` can hold indefinitely; PR 4 is the only step that forfeits the cheap rollback, and it is gated on soaks rather than dates.
 
 ## Security and compliance
 
@@ -203,20 +222,31 @@ Net posture change: a leaked MCP service credential currently reaches any user i
 
 ## Phasing and estimates
 
-**Three PRs across two repos, plus one flag rollout that is not a PR.** Three is the floor: PR 1 and PR 2 are in different repos, and PR 3 must not merge until the flag has soaked. Nothing changes for an existing caller until the flag opens, and no step alters a credential any existing caller holds.
+**Four PRs across three repos, plus one flag rollout that is not a PR.** Four is the floor: the three repos cannot share a PR, and the deletions must not merge until both flips have soaked. No step alters a credential an existing caller holds without the Backend already accepting both.
 
 **PR 1 — Backend API audience and dual acceptance (Backend-Server, ~3 days).**
-`auth0_resource_server` for `https://api.solsticehealth.co` with `auth0_resource_server_scopes` (`memory:invoke`, `prc:write`) and client grants, modelled on the `auth0_resource_server.mcp` block; `Auth0JWTBearer.audience` becomes a list, which PyJWT accepts natively. Terraform and the validator ship together because neither does anything without the other: the Backend cannot receive a token for an audience that does not exist, and the audience is unreachable while the validator rejects it. Tests cover a token for each audience and one for neither. Inert until something mints the new audience.
+`auth0_resource_server` for `https://api.solsticehealth.co` with `auth0_resource_server_scopes` (`memory:invoke`, `prc:write`), modelled on the `auth0_resource_server.mcp` block; `Auth0JWTBearer.audience` becomes a list, which PyJWT accepts natively. Terraform and the validator ship together because neither does anything without the other: the Backend cannot receive a token for an audience that does not exist, and the audience is unreachable while the validator rejects it.
 
-**PR 2 — Token exchange and cutover path (solstice-mcp-server, ~1 week).**
-`Auth0TokenExchange` with the bounded per-subject TTL cache, the flag client, and `BackendMemoryClient` pointed at `/api/agent-memory` behind the flag. Flag defaults off, so the merge is inert. Includes the injection-invariant test and the parity tests from Verification.
+Carry over `skip_consent_for_verifiable_first_party_clients = true` and the `subject_type_authorization` block, and note what the latter implies: under `user { policy = "require_client_grant" }`, client grants must cover **every** client that will mint the new audience — the shared tenant frontend client, `AUTH0_REVIEW_CLIENT_ID`, and the MCP clients. A missing grant is not a Terraform error; it surfaces as a rejected token request during PR 2. Confirm each frontend client is `is_first_party = true` in the same pass, since that is what suppresses the consent prompt.
 
-**Cutover — a flag change per tenant, not a deploy.** Soak before PR 3.
+Tests cover a token for each audience and one for neither. Inert until something mints the new audience.
 
-**PR 3 — Delete the internal plane (Backend-Server, ~3 days).**
-`internal_routes.py`, the optional `actor_sub`/`tenant_slug` fields on the three request DTOs, the 400 guard in `routes.py`, `revalidate_internal_actor`, `AUTH0_M2M_MEMORY_AUDIENCE` and the memory branch of `verify_m2m_memory_token`. Blocked until the flag has been fully open through a soak — everything it removes is still the off-branch until then. Resolve Open question 1 before PR 2 starts, since it decides whether this PR deletes a router or leaves one endpoint behind.
+**PR 2 — Frontend mints the new audience (Solstice-Frontend, ~1 day).**
+`AUTH0_AUDIENCE` in `.env` and the per-environment Amplify configuration. No application code changes — `lib/auth0.ts` and `lib/review-auth.ts` both read the variable. Revertible by restoring the variable.
 
-Sequencing: 1 → 2 → cutover → 3. No branches, no independent tracks.
+Roll lowest environment first, and verify three things before promoting, because they fail independently: a fresh sign-in completes with no consent screen (proves `is_first_party` plus the skip-consent flag); a guest review link completes the passwordless OTP exchange (proves the review client's grant); and a session established *before* the flip still works (proves dual acceptance). Announce the local-dev consent prompt ahead of the flip.
+
+**PR 3 — Token exchange and cutover path (solstice-mcp-server, ~1 week).**
+`Auth0TokenExchange` with the bounded per-subject TTL cache, the flag client, and `BackendMemoryClient` pointed at `/api/agent-memory` behind the flag. Flag defaults off, so the merge is inert. Includes the injection-invariant test and the parity tests from Verification. Independent of PR 2 — start both as soon as PR 1 is applied.
+
+**Cutover — a flag change per tenant, not a deploy.** Soak alongside the frontend rollout.
+
+**PR 4 — Delete both legacy paths (Backend-Server, ~3 days).**
+`internal_routes.py`, the optional `actor_sub`/`tenant_slug` fields on the three request DTOs, the 400 guard in `routes.py`, `revalidate_internal_actor`, `AUTH0_M2M_MEMORY_AUDIENCE`, the memory branch of `verify_m2m_memory_token`, and the Management API audience from `Auth0JWTBearer`.
+
+Two deletions in one PR because their gates converge: the internal plane needs the MCP flag fully open through a soak, and the old audience needs every environment on the new one plus the longest old-audience token lifetime elapsed. Both are true at the same point, and splitting them would mean two deploys to reach one resting state. Split only if the soaks actually diverge. Resolve Open question 1 before PR 3 starts, since it decides whether this deletes a router or leaves one endpoint behind.
+
+Sequencing: 1 → {2, 3} → cutover → 4. PRs 2 and 3 are independent and should run concurrently.
 
 Phase 1 for a Friday demo is PR 1: a real resource server in Auth0 and a Backend that accepts a token minted against it.
 
@@ -239,11 +269,11 @@ No new infrastructure beyond the Auth0 resource server. No new vendor, no new da
 
 It is three months later and this failed. The most likely reason:
 
-**The exchanged token's claims are not shaped like the frontend's, and a public route quietly reads one that differs.** `resolve_frontend_actor` only touches `sub`, so the memory routes are safe — but `auth0_middleware.py` carries path exemptions, an internal shared-secret path, and `require_admin` on the same singleton, and the error text in that file suggests the Management audience was chosen to make Auth0 return a JWT rather than an opaque token, not because anything reasoned about it. If MCP later wraps a route that reads more than `sub`, the failure is a claim that silently differs, not a token that 403s. The parity tests cover the memory routes; they do not cover the next route someone wraps.
+**The frontend flip broke something we did not know depended on the Management API audience.** `auth0_middleware.py` carries path exemptions, an internal shared-secret path, and `require_admin` all riding the same singleton, and the error text in that file suggests the audience was originally chosen to make Auth0 return a JWT rather than an opaque token — not because anything reasoned about it. Something downstream may read Management-API-shaped claims from the payload. The ordering mitigates it (dual acceptance first, one environment at a time), but the failure mode is a claim that silently differs rather than a token that 403s, so it will not show up as an error rate. Guest review sign-in is the specific path most likely to be missed: it shares `AUTH0_AUDIENCE` but not the client, and nothing in the main login flow exercises it.
 
-Second most likely: the per-subject token cache is unbounded in practice because eviction is keyed wrong, and a long-lived worker grows until it is restarted — the leak the `TenantMembershipCache` bound exists to prevent, reintroduced in a new class.
+Second: the per-subject token cache is unbounded in practice because eviction is keyed wrong, and a long-lived worker grows until it is restarted — the leak the `TenantMembershipCache` bound exists to prevent, reintroduced in a new class.
 
-Third: the soak was too short because the flag was opened on low-traffic tenants only, and PR 3 deleted a path that a high-traffic tenant had never actually exercised.
+Third: the soak was too short because the flag was opened on low-traffic tenants only, and PR 4 deleted a path that a high-traffic tenant had never actually exercised.
 
 ---
 
@@ -253,7 +283,8 @@ Third: the soak was too short because the flag was opened on low-traffic tenants
 |---|---|---|---|---|---|
 | 2026-09-18 | Register a Backend API audience rather than reuse `…/api/v2/` | Reuse the Management API audience; new resource server | Cannot define scopes on a resource server we do not own; `agent_memory` already refuses that audience in production | Author | Decided |
 | 2026-09-18 | Delegated tokens, superseding SOL-3438's 09-14 decision | Keep the revalidated actor envelope; forward the user bearer; exchange | SOL-3438 deferred this explicitly to avoid gating on an identity-platform change; this ticket is that change | Author | Proposed |
-| 2026-09-18 | Dual audience acceptance is the resting state; the frontend does not move | Flip the frontend in this ticket; dual acceptance permanently | Leaving the frontend alone removes the only backwards-incompatible step and drops the plan from seven PRs to three | Author | Decided |
+| 2026-09-18 | The frontend moves onto the new audience in this ticket | Defer to a follow-up; move it here behind dual acceptance | The Management API audience is one of the two problems this plan names; leaving it means the audience work is re-litigated later, and scope enforcement stays impossible | Author | Decided |
+| 2026-09-18 | Dual acceptance throughout, and the two flips run concurrently | Synchronized flip; sequential flips; concurrent flips under dual acceptance | Concurrency keeps this at four PRs without weakening any gate — the flips are independent and their soaks overlap | Author | Decided |
 | 2026-09-18 | SOL-3438 ships on M2M rather than waiting | Block its cutover on this; provision `prc:write` and migrate later | Blocking a mid-flight cutover on a platform migration is the wrong trade | Author | Proposed — see Open questions |
 | | | | | | |
 

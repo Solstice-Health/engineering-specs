@@ -476,6 +476,8 @@ Decided deliberately, and all of it is meant to be replaced.
 
 ### The rules move, as built
 
+- **The contract and the catalog ended up in one package**, `src_v2/prc_templates`. They were split at first — specification apart from stored data — but nothing imported across the boundary, so the split bought nothing and read as two adjacent directories with overlapping names. The tenancy difference that motivated the split now lives as a note on `routers/rules.py`: that route is exempt from `TenantMiddleware` by URL prefix, and the catalog routes that will join it are tenant- and brand-scoped and must not copy it.
+
 - **The rules endpoint authenticates but authorizes nothing, and is exempt from tenant resolution.** It had to be. The payload is one static document, identical for every tenant and brand, and the MCP asks for rules before it knows which tenant it is authoring for — so requiring `X-Tenant-Slug` would have meant giving `solstice_prc_template_rules` a tenant argument it has no way to fill. Its dependency verifies either credential and stops there.
 - **A rule's `backend` marking is derived from a table in the validator**, not repeated at each rejection site, so the document's marking and the checks cannot disagree. The bake-stage checks (`B1`-`B3`) name no rule: they describe what composition produces, and the document has no bake scope. That gap is real and wants the domain owner.
 - **`SOL-3053` kept its corpus analysis.** Only its normative sections — the v1 contract and the six-layer restatement — were replaced with a pointer. The 354-template corpus study behind the contract exists nowhere else.
