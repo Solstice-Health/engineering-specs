@@ -1,6 +1,6 @@
 # Retriever tool — proposed banner-first plan
 
-## 1. Shared preprocessing — index design intent, editable parameters, components and usage roles
+## Shared preprocessing — index design intent, editable parameters, components and usage roles
 
 ```mermaid
 flowchart TD
@@ -24,7 +24,7 @@ flowchart TD
     metadata --> index
 ```
 
-## 2. Shared bundle contract — each subagent submits one composed candidate containing the templates it used together
+## Shared bundle contract — each subagent submits one composed candidate containing the templates it used together
 
 ```mermaid
 flowchart TD
@@ -47,7 +47,9 @@ flowchart TD
     selection --> result["Selected bundle, source, renders and selection evidence"]
 ```
 
-## 3. Strategy 1 — intent retrieval, subagent customization and VLM selection
+## Retriever Tool Strategies
+
+### 1. Intent retrieval, subagent customization and VLM selection
 
 ```mermaid
 flowchart TD
@@ -74,7 +76,7 @@ flowchart TD
     failed --> exhausted["If all subagents fail, return no usable bundle"]
 ```
 
-## 4. Strategy 2 — add Jev relevance filtering and Mercury rough code customization
+### 2. Add Jev relevance filtering and Mercury rough code customization
 
 ```mermaid
 flowchart TD
@@ -105,7 +107,7 @@ flowchart TD
     failed --> exhausted["If all subagents fail, return no usable bundle"]
 ```
 
-## 5. Strategy 3 — add GPT Image composition, code reconstruction and final visual judging
+### 3. Add GPT Image composition, code reconstruction and final visual judging
 
 ```mermaid
 flowchart TD
@@ -129,7 +131,7 @@ flowchart TD
     judge --> result["Return the selected verified source bundle, renders and judgment"]
 ```
 
-## 6. Strategy 4 — GPT Image generates its preferred design and the VLM matches it to an existing bundle
+### 4. GPT Image generates its preferred design and the VLM matches it to an existing bundle
 
 ```mermaid
 flowchart TD
@@ -152,7 +154,7 @@ flowchart TD
     generated --> unresolved
 ```
 
-## 7. GPT Image input allocation — cap submitted previews and extra references at the configured endpoint limit
+## GPT Image input allocation — cap submitted previews and extra references at the configured endpoint limit
 
 ```mermaid
 flowchart TD
@@ -167,7 +169,7 @@ flowchart TD
     click docs "https://developers.openai.com/api/reference/resources/images/methods/edit" "OpenAI Images Edit API reference"
 ```
 
-## 8. Non-blocking mode — the main agent builds normally and applies retrieved templates when available
+## Non-blocking mode — the main agent builds normally and applies retrieved templates when available
 
 ```mermaid
 flowchart TD
@@ -190,7 +192,7 @@ flowchart TD
     resolve -->|"Unresolved"| unchanged
 ```
 
-## 9. Blocking mode — the main agent waits for a usable bundle and builds content with its templates
+## Blocking mode — the main agent waits for a usable bundle and builds content with its templates
 
 ```mermaid
 flowchart TD
