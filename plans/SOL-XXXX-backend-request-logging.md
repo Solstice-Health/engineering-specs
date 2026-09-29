@@ -42,14 +42,14 @@ P0, prod only:
 
 Stays INFO, never Slack: every access line (`http.request`, `agent.request`), every 4xx, and `session.handler_retry`. A retry is Restate doing its job, not a verdict. The failure monitor groups by `evt` and `error.kind` and renotifies every 30 minutes, so one broken route does not become a thread of copies.
 
-Process down, same team channel, written so the first line says the process is down:
+Process down is a missing heartbeat, not a quiet log stream. Request logs skip `/health`, and successful Celery tasks stay silent, so "no logs for 10 minutes" would page on a healthy idle process. The first line of each alert says the process is down.
 
 | Signal | What it means |
 |---|---|
-| Web has produced no logs for 10 minutes in prod | The API process is down. One failed request is not this. |
-| Celery worker has produced no logs for 10 minutes in prod | The worker process is down. One failed task is not this. |
+| No `evt=process.heartbeat` with `process=web` for 10 minutes in prod | The API process is down. One failed request is not this. |
+| No `evt=process.heartbeat` with `process=celery` for 10 minutes in prod | The worker process is down. One failed task is not this. |
 
-These two are the ones on-call treats as the platform being down. They go to the same channel so the team sees them too. Both stay notifications-off until the failure monitor is turned on.
+`process=web` is one INFO line from the existing `/health` path, and that path does not also emit `http.request`. `process=celery` is one INFO line from a worker timer, about once a minute. It is not a log on task success, and it is not `tasks.update_heartbeat`. Both stay notifications-off until the failure monitor is turned on.
 
 ## Current behavior
 
@@ -81,7 +81,7 @@ One line, written when the response finishes, including streams. Do not log each
 | `duration_ms` | wall clock, one decimal |
 | `streaming` | true when the path contains `/sse/` or `/stream` |
 
-Context fields already attached by the formatter stay on this line. Do not copy them into `extra`.
+Context fields already attached by the formatter stay on this line, except `user_email` and `user_name`, which the formatter drops. Do not copy them into `extra`. The only identity field on the line is `user_id`.
 
 Do not log the query string. SSE URLs carry the access token in the query (`SOL-1088`). Do not log the body or headers.
 
@@ -159,7 +159,9 @@ Code for this spec lands in two repos: `Backend-Server` and `Solstice-AI`. The m
 
 ## Formatter
 
-Backend `DatadogJsonFormatter.add_fields` copies `error.kind`, `error.message`, and `error.stack` from the log record onto the JSON object when they were passed in `extra`. It does not invent them for lines that have no exception. Existing redaction stays on all three JSON formatters (Backend-Server, the runner's `redact()`, and the Restate formatter): any key containing `token`, `secret`, `api_key`, `password`, `authorization`, `credential`, or `bearer` is replaced with `***REDACTED***`. The runner already redacts numbers that merely contain those substrings, so `prompt_tokens` still ships as a number. Do not change that.
+Backend `DatadogJsonFormatter.add_fields` copies `error.kind`, `error.message`, and `error.stack` from the log record onto the JSON object when they were passed in `extra`. It does not invent them for lines that have no exception. It drops `user_name` and any key whose name contains `email` (`user_email`, `actor.email`, and the same on extras) so an address never reaches Datadog or a later Slack post. `user_id` stays. It is the internal user id already set by `Auth0JWTBearer` (`str(user.id)`), not an email address. The runner has no user id and keeps `operation_id`.
+
+Existing redaction stays on all three JSON formatters (Backend-Server, the runner's `redact()`, and the Restate formatter): any key containing `token`, `secret`, `api_key`, `password`, `authorization`, `credential`, or `bearer` is replaced with `***REDACTED***`. The runner already redacts numbers that merely contain those substrings, so `prompt_tokens` still ships as a number. Do not change that. Apply the same email-and-name drop on the runner and Restate formatters.
 
 ## Datadog monitor
 
@@ -173,7 +175,16 @@ env:prod status:error @evt:(http.server_error OR celery.task_failed OR agent.req
 
 Group by `evt` and `error.kind`. Trigger when the count is at least 1 in 5 minutes. Renotify interval is 30 minutes. Recovery does not post.
 
-Message template, stored on the monitor so a later enable step does not invent one. It must include: `service`, env, version, `evt`, `error.kind`, `error.message`, `http.path` or `celery_task_name` or `handler`, `tenant_slug`, `user_email`, `operation_id`, `request_id`, `dd.trace_id`, and a Logs Explorer link filtered to that `request_id` when present, otherwise to `operation_id`. Runner lines have `operation_id` and no user email. Backend lines have both. Missing fields stay blank. No log body beyond those fields.
+Message template, stored on the monitor so a later enable step does not invent one. It must include: `service`, env, version, `evt`, `error.kind`, `error.message`, `http.path` or `celery_task_name` or `handler`, `tenant_slug`, `user_id`, `operation_id`, `request_id`, `dd.trace_id`, and a Logs Explorer link filtered to that `request_id` when present, otherwise to `operation_id`. Runner lines have `operation_id` and no `user_id`. Backend lines have `user_id`. Missing fields stay blank. Do not include `user_email` or `user_name`. No log body beyond those fields.
+
+Two more log monitors, also notifications off, for process down. They are not the error query above.
+
+```
+env:prod @evt:process.heartbeat @process:web
+env:prod @evt:process.heartbeat @process:celery
+```
+
+Each triggers on no data for 10 minutes. The message's first line says which process is down.
 
 Dev and local logs stay searchable in Datadog. The monitor query is prod only, so a synthetic dev error cannot page even after notifications are turned on.
 
@@ -181,13 +192,14 @@ Dev and local logs stay searchable in Datadog. The monitor query is prod only, s
 
 Pytest, run in `backend-server-web-1`:
 
-- A 200 and a 422 each emit one INFO line with `evt=http.request` and no `error.kind`. The query string from the request is absent from the log record.
+- A 200 and a 422 each emit one INFO line with `evt=http.request` and no `error.kind`. The query string from the request is absent from the log record. The JSON includes `user_id` and does not include `user_email` or `user_name`.
+- `/health` emits one INFO `evt=process.heartbeat` with `process=web` and no `http.request`.
 - An unhandled exception, an `HTTPException(500)`, and a `V2Error` with status 500 each emit `evt=http.server_error` with `error.kind`, `error.message`, and `error.stack`, and the HTTP response body is the generic detail with no traceback.
 - A `V2Error` 404 emits only the access line.
 - A decorated route emits one access line from the middleware, with `feature` set, and no second "Request" / "Response" line.
 - A stream path emits one INFO access line when the response finishes.
 - `task_failure_handler` emits `evt=celery.task_failed` and does not include task args. Heartbeat and stall-check failures emit nothing.
-- Formatter output contains `error.kind`, `error.message`, and `error.stack` when those extras are set, and omits them otherwise.
+- Formatter output contains `error.kind`, `error.message`, and `error.stack` when those extras are set, and omits them otherwise. A record that carries `user_email` or `user_name` in context emits neither key.
 
 Solstice-AI unit tests, next to the existing observability tests:
 
