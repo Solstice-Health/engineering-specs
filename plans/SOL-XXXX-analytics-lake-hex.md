@@ -6,15 +6,15 @@
 | **Author** | @jay |
 | **Reviewers** | @aris, plus the owner of tenancy and data access |
 | **Tier** | 2 |
-| **Status** | Building (phases 1 to 3 shipped, phase 4 open) |
-| **Date** | 2026-09-13 |
+| **Status** | Building (phases 1 to 3 and 6 shipped, phase 4 open) |
+| **Date** | 2026-09-13, updated 2026-09-30 |
 
 > [!IMPORTANT]
-> **Tier check.** Tier 2 because it: handles client data in a new way (customer tenant data and product analytics flow to a new vendor, Hex, and product analytics are copied to S3); adds new external dependencies (Hex, Athena, PostHog batch exports); includes a schema migration on an existing CRM table (`accounts.tenant_slug`). It does not touch auth or the tenancy model of the platform itself; every access path is read-only.
+> **Tier check.** Tier 2 because it: handles client data in a new way (customer tenant data, product analytics and backend logs flow to a new vendor, Hex, and product analytics and backend logs are copied to S3); adds new external dependencies (Hex, Athena, PostHog batch exports); includes a schema migration on an existing CRM table (`accounts.tenant_slug`). It does not touch auth or the tenancy model of the platform itself; every access path is read-only.
 
 ## 1. Problem
 
-Questions about the business need three systems today: the customer tenant databases (what work is happening), PostHog (how people use the product), and the CRM (who the customers are and what they pay). Each answer means an engineer writing SQL by hand, and questions that span two systems, such as "which customers have the biggest review backlog relative to how much they use the product", do not get answered at all. We want anyone on the team to ask these in plain English and get a reliable, shareable answer, without widening write access to anything.
+Questions about the business need four systems today: the customer tenant databases (what work is happening), PostHog (how people use the product), the CRM (who the customers are and what they pay), and Datadog (what the backend did for them: errors, latency, background jobs; and what their browsers experienced: page performance, frontend errors). Each answer means an engineer writing SQL by hand, and questions that span two systems, such as "which customers have the biggest review backlog relative to how much they use the product", do not get answered at all. We want anyone on the team to ask these in plain English and get a reliable, shareable answer, without widening write access to anything.
 
 ## 2. What exists today
 
@@ -23,7 +23,8 @@ Operational material for this system (runbooks, guide sources, lake definitions,
 - **Tenant databases.** One Postgres database per customer on `solstice-prod` (RDS), with a read replica `solstice-prod-read-replica`. Engineers reach them through the bastion `solstice-bastion` and an SSH tunnel (Backend-Server `docker-compose.yml`, `documentation/01-ONBOARDING.md`). Schema reference: Backend-Server `documentation/04-DATABASE-MODELS.md`. Key tables: `n_cg_operations` (assets), `admin_requests` (review requests), `n_cg_operation_qc_results` (MLR reports), `brands`, `users`, `projects`.
 - **CRM sync.** `solstice-crm/infra/lambda-request-sync` discovers tenant databases nightly from `pg_database`, reads request metadata as the least-privilege role `crm_sync_ro`, and upserts into Supabase `request_drafts`. It is the existing pattern for "a job in the VPC that reads every tenant", and this plan reuses it twice.
 - **PostHog.** Project "Solstice - PROD" (id 589053). The frontend (`Solstice-Frontend/lib/analytics/posthog.ts`) identifies persons with email, tenant slug and an `is_internal` flag, and sets group `tenant` (slug) and `brand` (brand id). Events carry `operation_id`, the asset id. About 35,000 events a month.
-- **The tenant slug** is already the shared identifier: database name, `X-Tenant-Slug` header, PostHog group, `request_drafts.tenant_slug`. It was not stored on CRM accounts, which is the gap this plan closes.
+- **Datadog.** The backend, Celery worker and MCP server ship structured JSON logs through FireLens; a pipeline promotes `tenant_slug`, `user_id`, `feature` and the MCP tool fields to facets (Backend-Server `terraform/environments/datadog`). Indexes keep 15 days. Every line also carries `user_email` and `user_name`. The frontend also sends Datadog RUM (browser) events: views with Core Web Vitals, clicks and product actions, errors, sessions, 20% with session replay; each carries the tenant slug as the RUM account, the user's id, email and name, and custom action payloads that can include chat text.
+- **The tenant slug** is already the shared identifier: database name, `X-Tenant-Slug` header, PostHog group, `request_drafts.tenant_slug`, Datadog log attribute. It was not stored on CRM accounts, which is the gap this plan closes.
 - Nothing reusable existed for a query layer or a lake. Looked at: Metabase and QuickSight (weaker natural-language layer), Claude with MCP servers (used to build this, not a shared tool).
 
 ## 3. Approach
@@ -31,12 +32,12 @@ Operational material for this system (runbooks, guide sources, lake definitions,
 Hex is the question-and-answer layer. Its agent writes SQL against connections we define, reads guides we write for definitions, and saves every answer as a shareable thread. Three kinds of connection, all read-only:
 
 1. **Per-tenant Postgres connections** through the existing bastion, using a new SSH-only OS user and a new database role `hex_ro`. Good for per-customer questions; cannot join across tenants.
-2. **An analytics lake** for everything that is not RDS: PostHog exports Parquet to S3 every hour, Glue catalogs it, Athena queries it, Hex connects to Athena by assuming an IAM role. One connection covers all customers.
+2. **An analytics lake** for everything that is not RDS: PostHog exports Parquet to S3 every hour and Datadog archives backend logs to S3 hourly; Glue catalogs both, Athena queries them, Hex connects to Athena by assuming an IAM role. One connection covers all customers. Datadog's archive keeps user names and emails, so a nightly Lambda rewrites each day into a typed table with an allowlisted column set (emails inside message text redacted), and only that table is reachable from Hex. RUM has no archive, so a second nightly Lambda pulls the day's view, action, error and session events from the RUM search API and writes only an allowlisted, flattened field set (no emails, names, IPs, user agents, stack traces, feature flags or custom payloads; resource and long-task events skipped). Session replay never leaves Datadog.
 3. **The CRM** on Supabase, connected directly with a `hex_ro` role and row-level-security policies. The only place all customers already sit in one table.
 
 Two generic pieces make new customers appear without manual work: a nightly-maintained `platform_tenants` registry in the CRM (with `accounts.tenant_slug` as the exact join key), and a single onboarding SQL script in Backend-Server that grants both read-only roles on a new tenant database.
 
-What is deliberately not built yet: copying tenant tables into the lake (phase 4), Datadog and Braintrust sources, a semantic model. Guides carry the definitions instead.
+What is deliberately not built yet: copying tenant tables into the lake (phase 4), Datadog metrics, traces and session replay (logs and RUM events are exported), Braintrust, a semantic model. Guides carry the definitions instead.
 
 ## 4. System views
 
@@ -48,6 +49,10 @@ flowchart LR
     RDS[("RDS prod\nread replica\n21 tenant DBs")] --> B["Bastion\nuser hex"]:::delta
     B --> HX["Hex\n21 Postgres connections"]:::delta
     PH["PostHog Cloud"] -->|hourly Parquet| S3[("S3 analytics lake")]:::delta
+    DD["Datadog"] -->|hourly log archive| S3
+    S3 -->|raw logs| LC["Nightly Lambdas\nlog compaction, RUM export\nallowlisted fields"]:::delta
+    DD -->|RUM search API| LC
+    LC -->|typed tables| S3
     S3 --> AT["Glue + Athena"]:::delta
     AT --> HX2["Hex\nAthena connection"]:::delta
     CRM[("CRM Supabase")] --> HX3["Hex\nCRM connection"]:::delta
@@ -103,7 +108,7 @@ erDiagram
     }
 ```
 
-The lake adds no new source of truth: `posthog_events` is a copy of PostHog; `platform_tenants` is derived nightly from `pg_database` and each tenant's `companies` table. The one new column of record is `accounts.tenant_slug`.
+The lake adds no new source of truth: `posthog_events` is a copy of PostHog; `datadog_logs` is a column-reduced copy of the Datadog archive (timestamp, service, level, tenant slug, user id, request id, feature, asset id, HTTP method, path, status, duration, MCP tool and outcome, logger, message with emails redacted, trace id); `datadog_rum` is a field-reduced copy of the RUM events (per event type: page, load timings and Core Web Vitals, action name, error source, type and redacted message, session totals, browser, OS, device, country, release); `platform_tenants` is derived nightly from `pg_database` and each tenant's `companies` table. The one new column of record is `accounts.tenant_slug`.
 
 ### State: lifecycle of the entity
 
@@ -122,6 +127,7 @@ stateDiagram-v2
 - We accept **one Hex connection per tenant** (21 today, created by hand because Hex's API cannot create SSH-tunnelled connections) to get per-customer questions with no change to network posture. Revisit when phase 4 lands and the lake covers tenant data, at which point per-tenant connections become optional.
 - We accept **an hour of lag on product analytics** to get a pipeline with no servers and no credentials (PostHog assumes an IAM role, Hex assumes an IAM role). Revisit if a question needs freshness under an hour; PostHog supports 5-minute intervals with one field change.
 - We accept **cross-source joins happening in Hex notebooks** (the agent pulls two result sets and joins them in Python) for one customer at a time, to ship without an ETL layer. Revisit when the same cross-customer question is asked twice; that is the trigger for phase 4.
+- We accept **a day of lag on backend logs** (the compaction runs nightly, so the log table is complete through yesterday) to keep the raw archive, which carries user emails, out of Hex entirely. Revisit if someone needs same-day log questions in Hex; Datadog itself answers those today.
 - We accept **guides instead of a semantic model** to get shared definitions today at almost no cost. Revisit when five or six metrics are asked repeatedly and the lake holds tenant data; then one semantic model over the lake pays back.
 - We accept **a third-party LLM pipeline seeing query results** (Hex uses OpenAI and Anthropic under zero-retention terms and holds a BAA) to get natural-language answers at all. Revisit before any PHI-bearing table is exposed; today the exposed tables hold marketing content metadata, staff names and emails, and commercial terms.
 
@@ -139,6 +145,8 @@ stateDiagram-v2
 - **Widened read surface.** A single `hex_ro` credential now reads every tenant database. Mitigations: bastion user can only forward to one host and port; role is SELECT-only with a two-minute statement timeout and read-only transactions; Hex's workspace access is one script (analytics-platform `hex/governance.py`) away from group-restricted. Rollback: `alter role hex_ro nologin` on the primary revokes every tenant connection at once; deleting the `hex` bastion user closes the network path. Minutes.
 - **Wrong answers from ambiguous columns.** Seen on day one: `marketing_files.is_reviewed` reads like an MLR flag and means "saved in the viewer". Mitigation: guides name these traps and define each metric; endorsed threads pin known-good SQL. Residual risk is a confident wrong number in a leadership conversation; the metrics guide asks the agent to state its definition in every answer.
 - **Auto-linking a CRM account to the wrong tenant.** Mitigation: exact name match, one candidate only, slug unused, sync may only fill empty slugs. Rollback: change the dropdown; the link is logged in `sync_runs.summary`.
+- **User emails in log lines.** The backend puts `user_email` and `user_name` on every log line, and some messages embed the email again. Mitigation: Hex's role cannot read the raw archive prefix and is explicitly denied the raw Glue table; the compaction selects a fixed column list and replaces any email inside `message`; verified on the first day's data (15 of 1,295 messages had one, none after). Residual: a person's name typed into a log message would survive. Rollback: delete the curated prefix; the raw archive is never exposed.
+- **Chat text and identity in RUM payloads.** Custom RUM actions carry the product event payload, which by an earlier decision includes `message_text`, and every RUM event carries the user's email and name. Mitigation: the exporter selects fields by name and never writes the payload, the user identity fields, IPs, user agents or stack traces; error messages are email-redacted; verified on a full day (11,000 events, zero emails). Nothing intermediate with those fields is written to S3. Rollback: delete the prefix.
 - **PostHog export schema drift.** Already hit once: persons timestamps are epoch seconds. Mitigation: Glue tables are typed by inspection, not docs; views isolate consumers. Rollback: recreate the Glue table; data in S3 is untouched.
 - **Credit exhaustion in Hex.** Each agent question spends credits; the trial allowance was mostly used on day one. Mitigation: auto top-up, saved threads and apps (reruns cost nothing), guides reduce retries.
 - **Tenancy.** No change to the platform's tenancy model. Hex connections are per tenant database, so a question cannot leak across tenants through the tenant connections. The lake and the CRM are multi-tenant by design and are the reason for the access group in phase 5.
@@ -146,6 +154,10 @@ stateDiagram-v2
 ## 8. Verification
 
 Done, 2026-09-13: all 23 Hex connections pass schema refresh; the agent answered per-tenant, cross-source and CRM questions with correct exclusions after the guides were published; PostHog backfill from 3 September complete with zero failed runs; Athena queries return correct counts and timestamps on events and persons; Lambda unit tests (29) and CRM unit tests pass; lint and typecheck clean.
+
+Done, 2026-09-30 (RUM): one day exported with counts equal to Datadog's own aggregates (1,226 views, 7,286 actions, 2,192 errors, 160 sessions); every row timestamped and 98% carrying a tenant; both daily views return per-customer Core Web Vitals and error counts; zero emails in error messages; September backfilled.
+
+Done, 2026-09-30: Datadog archive delivering; first day compacted (1,295 lines, 765 request summaries, 6 tenants) with zero emails in the curated table; Hex's preview of the raw table fails with table-not-found for the Hex role; the agent read the new guide, queried the daily view and matched Athena's numbers, and applied the guide's caveats (UTC day, partial load, streaming undercount) unprompted.
 
 Signals after ship: `sync_runs.summary.accounts_linked` on the first nightly run after the CRM PR merges; Hex Settings, Credits usage per thread after a week; the list of questions Aris and Jay found wrong or unanswerable, which decides phase 4.
 
@@ -175,22 +187,25 @@ Non-goals: writing back to any source from Hex; replacing Datadog for operationa
 | 3b | `platform_tenants` registry and `accounts.tenant_slug` (solstice-crm#64); onboarding grants script (Backend-Server#1285) | PRs open |
 | 4 | Nightly Lambda copies four tenant tables per tenant into the lake with a `tenant` column; Glue tables; cross-customer SQL in one connection | Not started; triggered by repeated cross-customer questions |
 | 5 | Hex access group and sensitivity labels (analytics-platform `hex/governance.py`), seats | Deferred while two evaluators |
+| 6 | Datadog log archive to the lake; nightly compaction Lambda; `datadog_logs` and two daily views; guide; Hex role limited to the curated prefix | Shipped 2026-09-30; archive Terraform in Backend-Server#1380 |
+| 6b | Datadog RUM export Lambda; `datadog_rum` and two daily views; guide part 2; September backfill | Shipped 2026-09-30 |
 
 Rollout order for 3b: merge the CRM PR (migration applies by GitHub Action); run `onboard_all_tenants.sh` on prod so `crm_sync_ro` can read `companies`; redeploy the Lambda; check `accounts_linked`; link leftovers from the Accounts page. Backout: the migration is additive; disabling the Lambda's registry step is one try block.
 
 ## Security and compliance
 
 - New data processors: Hex (SOC 2 Type II, HIPAA, BAA available including multi-tenant; LLM providers OpenAI and Anthropic under zero retention), AWS Athena and Glue in our own account. PostHog already held the product data.
-- Data classes reaching Hex today: asset and request metadata, brand and project names, staff names and emails (tenant `users`, CRM `request_drafts`), commercial terms (CRM `deals`). No clinical or patient data; tenant tables that hold generated content bodies are hidden by schema filters when governance is applied.
+- Data classes reaching Hex today: asset and request metadata, brand and project names, staff names and emails (tenant `users`, CRM `request_drafts`), commercial terms (CRM `deals`), backend log lines (request paths, status codes, latency, feature names, user ids, log text with emails redacted; no user names or emails as columns), browser RUM events (page paths, load timings, action names, error types and redacted messages, session totals, browser and device, country; no emails, names, IPs, stacks or payloads). No clinical or patient data; tenant tables that hold generated content bodies are hidden by schema filters when governance is applied.
 - Network: Hex reaches RDS only through the bastion, from three static IPs, as an OS user that can forward to one host and port and has no shell. S3 blocks public access and requires TLS. Athena results expire after 30 days. The CRM database accepts connections from any IP by Supabase default; tightening it is a separate task because the web app and the sync Lambda also connect.
 - Table-level access control, not UI hiding. `hex_ro` holds SELECT on an allowlist only: four metadata tables (`users`, `brand_team_members`, `projects`, `prior_approved_files`) and content-free views in a dedicated `analytics` schema: `companies` (no integration metadata, which holds encrypted Veeva credentials), `assets` (no prompt, messages, HTML, chat history, source material or metadata blobs), `mlr_reviews` (counts and flags, no report payload), `brands` (no ISI text or brand configuration), `marketing_files` (no spell-check output or file content), `requests` (no comment text; dismissal category and comment count kept). The onboarding script revokes every other grant and every default privilege first, taking temporary membership in table-owning roles where needed, and its verification fails if any grant or default ACL survives outside the list or if a base table behind a view is readable. Generated content, chat transcripts, ISI text and brand configuration cannot reach Hex or its LLM providers. Exposing a new table is a deliberate edit to the script. Hex schema filters are not relied on.
 - Grant scope. The bulk grant script only touches databases that have an `admin_requests` table (the CRM sync's discovery rule), so a non-tenant database on the instance is never granted. `solstice-auth` is a separate RDS instance and is never reached.
+- Datadog writes to S3 only through the role of its existing AWS integration (Datadog accepts no other), which gained a write-only policy for the raw prefix. The compaction Lambda's role can read the raw prefix and write the curated one; Hex's role can read only the curated one. The RUM export Lambda reads the two Datadog API parameters from SSM at run time and can write only its own prefix.
 - Credentials: two database passwords (`hex_ro` on RDS, `hex_ro` on Supabase) held by Hex. Neither appears in any repository; the setup SQL creates the roles without a password and the value is set out of band. Everything else is role assumption with external ids. The IAM user created for Athena on day one was deleted the same day in favour of the role.
 - Audit: `pgaudit` is on for the prod parameter group (`ddl,role,write`; reads are not logged). Hex keeps every thread with its SQL. Bastion auth logs record every Hex session.
 
 ## Phasing and estimates
 
-Phases 1 to 3 took one working day with an agent doing the AWS and PostHog work and a person doing the Hex forms and the SQL that needed prod credentials. Phase 3b is two small PRs. Phase 4 is half a day. Phase 5 is minutes.
+Phases 1 to 3 took one working day with an agent doing the AWS and PostHog work and a person doing the Hex forms and the SQL that needed prod credentials. Phase 3b is two small PRs. Phase 6 took two hours plus twenty minutes waiting for the first archive file; the RUM export took one more hour. Phase 4 is half a day and can reuse the phase 6 Lambda shape. Phase 5 is minutes.
 
 ## Deploy view
 
@@ -203,7 +218,11 @@ flowchart LR
         S3[("solstice-analytics-lake")]:::delta
         GL["Glue solstice_analytics\nAthena solstice-analytics"]:::delta
         L["crm-request-sync Lambda\n+ platform_tenants"]:::delta
+        LC["datadog-log-compact 02:30 UTC\ndatadog-rum-export 02:45 UTC"]:::delta
     end
+    DD["Datadog US1"] -->|assume integration role, raw prefix| S3
+    DD -->|RUM search API, keys from SSM| LC
+    S3 --> LC --> S3
     HEX["Hex Cloud US\n3 static IPs"]:::delta -->|ssh 22| BS --> RR
     HEX -->|assume hex-athena| GL --> S3
     PH["PostHog Cloud US"] -->|assume posthog-batch-exports| S3
@@ -232,6 +251,9 @@ It is December and this failed. The most likely reason: the team asked a few que
 | 2026-09-13 | Defer access groups while two people evaluate | Lock down now; defer | Evaluation friction; script ready | Jay | Decided |
 | 2026-09-14 | `hex_ro` reads an allowlist of metadata tables plus content-free views, not a denylist | Schema filters only; DB revoke list; DB allowlist with views | Review found `n_cg_operation_messages` missing from the denylist; a denylist drifts as the schema grows, an allowlist fails closed | agent, pending review | Proposed |
 | 2026-09-14 | Brands, requests and marketing files also go through views; default ACLs are revoked fail-closed | Grant base tables; views | Review found ISI text and brand configuration on `brands`, comment text on `admin_requests`, and default ACLs that could survive for other table owners | agent, pending review | Proposed |
+| 2026-09-30 | Datadog logs reach Hex through a nightly compacted, column-allowlisted table, never the raw archive | Raw archive with an Athena view on top; compacted table | An Athena view does not stop the Hex role from reading the raw table underneath; the archive carries user emails; the compaction also yields Parquet speed | Jay, agent | Decided |
+| 2026-09-30 | Datadog archives through the existing AWS-integration role | Dedicated write-only role; integration role | Datadog rejects any other role; the integration role got a write-only inline policy for one prefix instead | agent | Decided |
+| 2026-09-30 | Logs and RUM events from Datadog, not metrics, traces or session replay | Logs only; logs plus RUM; plus metrics via API puller | RUM adds page performance and frontend errors per customer, which PostHog lacks; it has no archive, so a nightly API pull selecting fields by name is the only path that keeps emails and chat payloads out; no question has needed metrics | Jay | Decided |
 | 2026-09-14 | Keep passwords out of the public specs repo entirely | Placeholder in SQL; none | The CRM setup SQL had an always-run `alter role ... password` with a committed placeholder; removed | agent | Decided |
 
 ## Sign-off
