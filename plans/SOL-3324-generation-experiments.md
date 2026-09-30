@@ -1,3 +1,6 @@
+# SOL-3324: Banner generation examples (generic vs golden)
+
+**Ticket:** [SOL-3324](https://linear.app/solsticehealth/issue/SOL-3324)
 
 These experiments involve adding two different types of examples within the banner generation workspace: generic examples and golden branded examples.
 
